@@ -2,6 +2,6 @@
 Name=TaskWatch+
 Exec=taskwatch tui
 Icon=TaskWatch+
-Terminal=true
+Terminal=false
 Type=Application
 Categories=Utility;
