@@ -9,12 +9,35 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -e . pyinstaller
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --onefile --name taskwatch --add-data "config:config" taskwatch/__main__.py
+
+      - name: Package release tarball
+        run: |
+          mkdir taskwatch-${{ github.ref_name }}
+          cp dist/taskwatch taskwatch-${{ github.ref_name }}/
+          cp taskwatch.desktop taskwatch-${{ github.ref_name }}/
+          cp TaskWatch+.png taskwatch-${{ github.ref_name }}/
+          cp -r config taskwatch-${{ github.ref_name }}/
+          tar czf taskwatch-${{ github.ref_name }}-linux-x86_64.tar.gz taskwatch-${{ github.ref_name }}/
+
       - uses: softprops/action-gh-release@v2
         env:
           ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
         with:
           generate_release_notes: true
+          files: taskwatch-*-linux-x86_64.tar.gz
