@@ -10,11 +10,24 @@ mkdir -p "$BIN_DIR" "$APP_DIR" "$ICON_DIR"
 cp taskwatch "$BIN_DIR/"
 chmod +x "$BIN_DIR/taskwatch"
 
-sed "s|^Exec=.*|Exec=${BIN_DIR}/taskwatch tui|" taskwatch.desktop > "$APP_DIR/taskwatch.desktop"
+for term in kitty alacritty wezterm gnome-terminal konsole xfce4-terminal foot xterm; do
+    if command -v "$term" >/dev/null 2>&1; then
+        TERMINAL="$term"
+        break
+    fi
+done
+if [ -z "$TERMINAL" ] && command -v x-terminal-emulator >/dev/null 2>&1; then
+    TERMINAL="x-terminal-emulator"
+fi
+if [ -z "$TERMINAL" ]; then
+    echo "Error: no supported terminal found"
+    exit 1
+fi
+sed "s|^Exec=.*|Exec=${TERMINAL} -e ${BIN_DIR}/taskwatch tui|" taskwatch.desktop > "$APP_DIR/taskwatch.desktop"
 
 cp TaskWatch+.png "$ICON_DIR/"
 
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$APP_DIR"
 command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f -t "$HOME/.local/share/icons" 2>/dev/null || true
 
-echo "Installed. Launch with: taskwatch tui"
+echo "Installed. Launch with: $TERMINAL -e taskwatch tui"
