@@ -1,6 +1,6 @@
 [Desktop Entry]
 Name=TaskWatch+
-Exec=taskwatch
+Exec=taskwatch tui
 Icon=TaskWatch+
 Terminal=true
 Type=Application
