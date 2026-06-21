@@ -24,7 +24,7 @@ jobs:
 
       - name: Build with PyInstaller
         run: |
-          pyinstaller --onefile --name taskwatch --add-data "config:config" taskwatch/__main__.py
+          pyinstaller --onefile --name taskwatch --add-data "config:config" run.py
 
       - name: Package release tarball
         run: |
