@@ -1,3 +1,5 @@
+import sqlite3
+
 from .db import get_conn
 from .models import Directory
 
@@ -16,14 +18,17 @@ def list_directories(archive_id: int | None = None) -> list[Directory]:
     return [Directory(id=r["id"], archive_id=r["archive_id"], name=r["name"]) for r in rows]
 
 
-def create_directory(archive_id: int, name: str) -> Directory:
+def create_directory(archive_id: int, name: str) -> Directory | None:
     conn = get_conn()
-    cur = conn.execute(
-        "INSERT INTO directories (archive_id, name) VALUES (?, ?)",
-        (archive_id, name),
-    )
-    conn.commit()
-    return Directory(id=cur.lastrowid, archive_id=archive_id, name=name)
+    try:
+        cur = conn.execute(
+            "INSERT INTO directories (archive_id, name) VALUES (?, ?)",
+            (archive_id, name),
+        )
+        conn.commit()
+        return Directory(id=cur.lastrowid, archive_id=archive_id, name=name)
+    except sqlite3.IntegrityError:
+        return None
 
 
 def rename_directory(directory_id: int, name: str) -> Directory | None:
@@ -34,7 +39,10 @@ def rename_directory(directory_id: int, name: str) -> Directory | None:
     conn.commit()
     if cur.rowcount == 0:
         return None
-    return Directory(id=directory_id, archive_id=0, name=name)
+    row = conn.execute("SELECT id, archive_id, name FROM directories WHERE id = ?", (directory_id,)).fetchone()
+    if row is None:
+        return None
+    return Directory(id=row["id"], archive_id=row["archive_id"], name=row["name"])
 
 
 def delete_directory(directory_id: int) -> bool:

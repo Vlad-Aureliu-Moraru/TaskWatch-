@@ -1,3 +1,5 @@
+import sqlite3
+
 from .db import get_conn
 from .models import Tag
 
@@ -14,7 +16,7 @@ def create_tag(name: str) -> Tag:
         cur = conn.execute("INSERT INTO tags (name) VALUES (?)", (name.strip(),))
         conn.commit()
         return Tag(id=cur.lastrowid, name=name.strip())
-    except conn.IntegrityError:
+    except sqlite3.IntegrityError:
         row = conn.execute("SELECT id, name FROM tags WHERE name = ?", (name.strip(),)).fetchone()
         return Tag(id=row["id"], name=row["name"])
 

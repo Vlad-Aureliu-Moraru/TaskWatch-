@@ -10,9 +10,18 @@ TW_TAG = "[TW]"
 TW_RE = re.compile(r"^\d{2}/\d{2}/\d{4}.*\|" + re.escape(TW_TAG))
 
 
-def _ddmmyyyy_to_mmddyyyy(d: str) -> str:
+def _date_to_mmddyyyy(d: str) -> str | None:
+    if d in (None, "", "none"):
+        return None
+    try:
+        dt = datetime.strptime(d, "%Y-%m-%d")
+        return dt.strftime("%m/%d/%Y")
+    except ValueError:
+        pass
     parts = d.split("/")
-    return f"{parts[1]}/{parts[0]}/{parts[2]}"
+    if len(parts) == 3:
+        return f"{parts[1]}/{parts[0]}/{parts[2]}"
+    return None
 
 
 def read_apts() -> list[str]:
@@ -22,9 +31,9 @@ def read_apts() -> list[str]:
 
 
 def task_to_apt_line(task: Task) -> str | None:
-    if task.deadline in (None, "", "none"):
+    mmddyy = _date_to_mmddyyyy(task.deadline)
+    if mmddyy is None:
         return None
-    mmddyy = _ddmmyyyy_to_mmddyyyy(task.deadline)
     return f"{mmddyy} @ 00:00 -> {mmddyy} @ 23:59|{TW_TAG} {task.name}"
 
 

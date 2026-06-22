@@ -30,6 +30,7 @@ class Task:
     finished_date: str = "none"
     has_to_be_completed_to_repeat: bool = True
     repeat_on_specific_day: str = "none"
+    position: int = 0
 
 
 @dataclass

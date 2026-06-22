@@ -34,8 +34,8 @@ def restore_task(data: dict) -> bool:
             """INSERT INTO tasks
                (id, directory_id, name, description, deadline, urgency, difficulty,
                 time_dedicated, repeatable, repeatable_type, finished, finished_date,
-                has_to_be_completed_to_repeat, repeat_on_specific_day)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                has_to_be_completed_to_repeat, repeat_on_specific_day, position)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 data["id"], data["directory_id"], data["name"],
                 data.get("description", ""), data.get("deadline", "none"),
@@ -47,6 +47,7 @@ def restore_task(data: dict) -> bool:
                 data.get("finished_date", "none"),
                 int(data.get("has_to_be_completed_to_repeat", True)),
                 data.get("repeat_on_specific_day", "none"),
+                data.get("position", 0),
             ),
         )
         conn.commit()

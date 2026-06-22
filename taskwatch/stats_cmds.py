@@ -9,13 +9,14 @@ def compute_stats() -> dict:
     finished = conn.execute("SELECT COUNT(*) FROM tasks WHERE finished = 1").fetchone()[0]
     pending = total - finished
 
-    today_str = date.today().strftime("%d/%m/%Y")
+    today = date.today()
+    today_str = today.isoformat()
     today_completed = conn.execute(
         "SELECT COUNT(*) FROM tasks WHERE finished = 1 AND finished_date = ?",
         (today_str,),
     ).fetchone()[0]
 
-    monday = (date.today() - timedelta(days=date.today().weekday())).strftime("%d/%m/%Y")
+    monday = (today - timedelta(days=today.weekday())).isoformat()
     completed_this_week = conn.execute(
         "SELECT COUNT(*) FROM tasks WHERE finished = 1 AND finished_date >= ?",
         (monday,),
@@ -35,6 +36,59 @@ def compute_stats() -> dict:
 
     total_tags = conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
 
+    # Urgency × Difficulty heatmap (pending tasks only)
+    ud_grid = [[0] * 5 for _ in range(5)]
+    for r in conn.execute(
+        "SELECT urgency, difficulty, COUNT(*) AS c FROM tasks WHERE finished = 0 GROUP BY urgency, difficulty"
+    ):
+        ud_grid[r["urgency"] - 1][r["difficulty"] - 1] = r["c"]
+
+    # Deadline timeline (pending tasks only)
+    sunday = monday  # monday is already ISO string of this week's monday
+    sunday_dt = today - timedelta(days=today.weekday()) + timedelta(days=6)
+    next_sunday_dt = sunday_dt + timedelta(days=7)
+    sunday_str = sunday_dt.isoformat()
+    next_sunday_str = next_sunday_dt.isoformat()
+    today_due = conn.execute(
+        "SELECT COUNT(*) FROM tasks WHERE finished = 0 AND deadline = ?",
+        (today_str,),
+    ).fetchone()[0]
+    this_week = conn.execute(
+        "SELECT COUNT(*) FROM tasks WHERE finished = 0 AND deadline > ? AND deadline <= ?",
+        (today_str, sunday_str),
+    ).fetchone()[0]
+    next_week = conn.execute(
+        "SELECT COUNT(*) FROM tasks WHERE finished = 0 AND deadline > ? AND deadline <= ?",
+        (sunday_str, next_sunday_str),
+    ).fetchone()[0]
+    later = conn.execute(
+        "SELECT COUNT(*) FROM tasks WHERE finished = 0 AND deadline > ?",
+        (next_sunday_str,),
+    ).fetchone()[0]
+    no_deadline = conn.execute(
+        "SELECT COUNT(*) FROM tasks WHERE finished = 0 AND deadline = 'none'"
+    ).fetchone()[0]
+
+    # Archive stats
+    archive_stats_list = []
+    for r in conn.execute(
+        """SELECT a.name, COUNT(t.id) AS total,
+                  SUM(CASE WHEN t.finished THEN 1 ELSE 0 END) AS done,
+                  COALESCE(SUM(t.time_dedicated), 0) AS time_budget
+           FROM archives a
+           LEFT JOIN directories d ON d.archive_id = a.id
+           LEFT JOIN tasks t ON t.directory_id = d.id
+           GROUP BY a.id
+           ORDER BY a.name"""
+    ):
+        archive_stats_list.append({
+            "name": r["name"],
+            "total": r["total"],
+            "done": r["done"],
+            "pct": round((r["done"] / r["total"] * 100) if r["total"] else 0),
+            "time_budget": r["time_budget"],
+        })
+
     return {
         "total": total,
         "finished": finished,
@@ -45,6 +99,16 @@ def compute_stats() -> dict:
         "total_time": total_time,
         "completion_pct": completion_pct,
         "total_tags": total_tags,
+        "ud_grid": ud_grid,
+        "deadline_timeline": {
+            "overdue": overdue,
+            "due_today": today_due,
+            "this_week": this_week,
+            "next_week": next_week,
+            "later": later,
+            "no_deadline": no_deadline,
+        },
+        "archive_stats": archive_stats_list,
     }
 
 

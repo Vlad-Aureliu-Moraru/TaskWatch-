@@ -10,8 +10,8 @@ WORK_PERCENTAGE_MATRIX = [
 
 
 def compute_schedule(task: Task) -> dict:
-    urgency = task.urgency
-    difficulty = task.difficulty
+    urgency = max(1, min(5, task.urgency))
+    difficulty = max(1, min(5, task.difficulty))
     total_seconds = task.time_dedicated * 60
 
     if total_seconds <= 0:
@@ -69,12 +69,13 @@ def format_schedule(task: Task) -> str:
 
     lines.append(f"  {'0':>3}: {_fmt_duration(s['segments'][0]):>8}  intro")
     idx = 1
-    for i in range(s["difficulty"]):
+    diff = max(1, s["difficulty"])
+    for i in range(diff):
         wk = s["segments"][1 + i * 2]
         br = s["segments"][1 + i * 2 + 1]
-        lines.append(f"  {idx:>3}: {_fmt_duration(wk):>8}  work ({s['work_minutes'] // s['difficulty']}m)")
+        lines.append(f"  {idx:>3}: {_fmt_duration(wk):>8}  work ({s['work_minutes'] // diff}m)")
         idx += 1
-        lines.append(f"  {idx:>3}: {_fmt_duration(br):>8}  break ({s['break_minutes'] // s['difficulty']}m)")
+        lines.append(f"  {idx:>3}: {_fmt_duration(br):>8}  break ({s['break_minutes'] // diff}m)")
         idx += 1
 
     return "\n".join(lines)

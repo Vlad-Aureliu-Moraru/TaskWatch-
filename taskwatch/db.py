@@ -1,5 +1,5 @@
 import sqlite3
-import os
+from datetime import datetime
 from pathlib import Path
 
 DATA_DIR = Path.home() / ".local" / "share" / "taskwatch"
@@ -10,7 +10,7 @@ _connection: sqlite3.Connection | None = None
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS archives (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL
+    name TEXT NOT NULL UNIQUE
 );
 
 CREATE TABLE IF NOT EXISTS directories (
@@ -77,6 +77,27 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE tasks ADD COLUMN position INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass
+    _migrate_dates(conn)
+
+
+def _migrate_dates(conn: sqlite3.Connection) -> None:
+    for col in ("deadline", "finished_date"):
+        rows = conn.execute(
+            f"SELECT id, {col} FROM tasks WHERE {col} != 'none'"
+        ).fetchall()
+        for r in rows:
+            val = r[col]
+            if val and "-" in val:
+                continue
+            try:
+                dt = datetime.strptime(val, "%d/%m/%Y")
+                conn.execute(
+                    f"UPDATE tasks SET {col} = ? WHERE id = ?",
+                    (dt.strftime("%Y-%m-%d"), r["id"]),
+                )
+            except (ValueError, TypeError):
+                pass
+    conn.commit()
 
 
 def close():

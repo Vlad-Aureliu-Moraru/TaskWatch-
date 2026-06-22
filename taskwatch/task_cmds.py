@@ -1,9 +1,13 @@
+import calendar
 import re
-from datetime import date, datetime
+import sqlite3
+from datetime import date, datetime, timedelta
+
 from .db import get_conn
 from .models import Task
 
 DATE_RE = re.compile(r"^\d{2}/\d{2}/\d{4}$")
+ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 VALID_REPEAT_TYPES = {"daily", "weekly", "biweekly", "monthly", "yearly", "none"}
 
 
@@ -13,16 +17,24 @@ def _clamp(val: int, lo: int, hi: int, name: str) -> int:
     return val
 
 
-def _validate_date(val: str) -> str:
+def _normalize_date(val: str) -> str:
     if val == "none":
         return val
-    if not DATE_RE.match(val):
-        raise ValueError(f"date must be dd/MM/yyyy or 'none', got '{val}'")
+    if ISO_DATE_RE.match(val):
+        datetime.strptime(val, "%Y-%m-%d")
+        return val
+    if DATE_RE.match(val):
+        return datetime.strptime(val, "%d/%m/%Y").strftime("%Y-%m-%d")
+    raise ValueError(f"date must be dd/MM/yyyy, yyyy-mm-dd, or 'none', got '{val}'")
+
+
+def _display_date(val: str) -> str:
+    if val in (None, "", "none"):
+        return "\u2014"
     try:
-        datetime.strptime(val, "%d/%m/%Y")
+        return datetime.strptime(val, "%Y-%m-%d").strftime("%d/%m/%Y")
     except ValueError:
-        raise ValueError(f"invalid date: '{val}'")
-    return val
+        return val
 
 
 def _validate_repeatable_type(val: str) -> str:
@@ -83,28 +95,31 @@ def create_task(
     _clamp(urgency, 1, 5, "urgency")
     _clamp(difficulty, 1, 5, "difficulty")
     _clamp(time_dedicated, 0, 99999, "time_dedicated")
-    deadline = _validate_date(deadline)
+    deadline = _normalize_date(deadline)
     repeatable_type = _validate_repeatable_type(repeatable_type)
 
     if repeatable and repeatable_type == "none":
         raise ValueError("repeatable_type is required when repeatable is True")
 
     conn = get_conn()
-    max_pos = conn.execute(
-        "SELECT COALESCE(MAX(position), -1) FROM tasks WHERE directory_id = ?",
-        (directory_id,),
-    ).fetchone()[0]
-    cur = conn.execute(
-        """INSERT INTO tasks
-           (directory_id, name, description, deadline, urgency, difficulty,
-            time_dedicated, repeatable, repeatable_type, has_to_be_completed_to_repeat,
-            repeat_on_specific_day, position)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (directory_id, name, description, deadline, urgency, difficulty,
-         time_dedicated, int(repeatable), repeatable_type, int(has_to_be_completed_to_repeat),
-         repeat_on_specific_day, max_pos + 1),
-    )
-    conn.commit()
+    try:
+        max_pos = conn.execute(
+            "SELECT COALESCE(MAX(position), -1) FROM tasks WHERE directory_id = ?",
+            (directory_id,),
+        ).fetchone()[0]
+        cur = conn.execute(
+            """INSERT INTO tasks
+               (directory_id, name, description, deadline, urgency, difficulty,
+                time_dedicated, repeatable, repeatable_type, has_to_be_completed_to_repeat,
+                repeat_on_specific_day, position)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (directory_id, name, description, deadline, urgency, difficulty,
+             time_dedicated, int(repeatable), repeatable_type, int(has_to_be_completed_to_repeat),
+             repeat_on_specific_day, max_pos + 1),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        raise ValueError(f"Task '{name}' already exists in this directory")
     return Task(id=cur.lastrowid, directory_id=directory_id, name=name,
                 description=description, deadline=deadline, urgency=urgency,
                 difficulty=difficulty, time_dedicated=time_dedicated,
@@ -122,7 +137,7 @@ def edit_task(task_id: int, **kwargs) -> Task | None:
         if k not in allowed or v is None:
             continue
         if k == "deadline":
-            v = _validate_date(v)
+            v = _normalize_date(v)
         elif k == "urgency":
             v = _clamp(v, 1, 5, "urgency")
         elif k == "difficulty":
@@ -140,7 +155,7 @@ def edit_task(task_id: int, **kwargs) -> Task | None:
         updates[k] = v
 
     if "finished" in updates and updates["finished"] and "finished_date" not in updates:
-        updates["finished_date"] = date.today().strftime("%d/%m/%Y")
+        updates["finished_date"] = date.today().isoformat()
 
     if not updates:
         return None
@@ -158,60 +173,90 @@ def edit_task(task_id: int, **kwargs) -> Task | None:
     return _row_to_task(row) if row else None
 
 
+_WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+
+
+def _first_weekday_of_month(year: int, month: int, weekday: int) -> int:
+    for d in range(1, calendar.monthrange(year, month)[1] + 1):
+        if date(year, month, d).weekday() == weekday:
+            return d
+    return 1
+
+
 def advance_deadline(task: Task, reset_finished: bool = True) -> Task | None:
     if not task.repeatable or task.repeatable_type == "none":
         return None
 
     try:
         if task.has_to_be_completed_to_repeat:
-            base_str = task.finished_date if task.finished_date != "none" else date.today().strftime("%d/%m/%Y")
+            base_str = task.finished_date if task.finished_date != "none" else date.today().isoformat()
         else:
             base_str = task.deadline
 
         if base_str == "none":
-            return None
+            base_str = date.today().isoformat()
 
-        base = datetime.strptime(base_str, "%d/%m/%Y").date()
+        base = date.fromisoformat(base_str)
     except (ValueError, TypeError):
         return None
 
     rtype = task.repeatable_type.lower()
-    if rtype == "daily":
-        new_deadline = (base + __import__("datetime").timedelta(days=1)).isoformat()
-    elif rtype == "weekly":
-        new_deadline = (base + __import__("datetime").timedelta(weeks=1)).isoformat()
-    elif rtype == "biweekly":
-        new_deadline = (base + __import__("datetime").timedelta(weeks=2)).isoformat()
-    elif rtype == "monthly":
-        y = base.year + (base.month) // 12
-        m = (base.month % 12) + 1
-        if m == 13:
-            m = 1
-            y += 1
-        import calendar
-        last = calendar.monthrange(y, m)[1]
-        d = min(base.day, last)
-        new_deadline = date(y, m, d).isoformat()
-    elif rtype == "yearly":
-        try:
-            new_deadline = base.replace(year=base.year + 1).isoformat()
-        except ValueError:
-            new_deadline = date(base.year + 1, 3, 1).isoformat()  # feb 29 fallback
-    else:
-        return None
+    specific_day = task.repeat_on_specific_day
+    target_wd = _WEEKDAYS.get(specific_day.lower()) if specific_day and specific_day != "none" else None
 
-    new_deadline_fmt = datetime.strptime(new_deadline, "%Y-%m-%d").strftime("%d/%m/%Y")
+    if target_wd is not None and rtype != "daily":
+        if rtype == "weekly":
+            days_ahead = (target_wd - base.weekday()) % 7
+            if days_ahead == 0:
+                days_ahead = 7
+            new_deadline = (base + timedelta(days=days_ahead)).isoformat()
+        elif rtype == "biweekly":
+            days_ahead = (target_wd - base.weekday()) % 7
+            if days_ahead == 0:
+                days_ahead = 7
+            new_deadline = (base + timedelta(days=days_ahead + 7)).isoformat()
+        elif rtype == "monthly":
+            y = base.year + (base.month) // 12
+            m = (base.month % 12) + 1
+            d = _first_weekday_of_month(y, m, target_wd)
+            new_deadline = date(y, m, d).isoformat()
+        elif rtype == "yearly":
+            y = base.year + 1
+            d = _first_weekday_of_month(y, base.month, target_wd)
+            new_deadline = date(y, base.month, d).isoformat()
+        else:
+            return None
+    else:
+        if rtype == "daily":
+            new_deadline = (base + timedelta(days=1)).isoformat()
+        elif rtype == "weekly":
+            new_deadline = (base + timedelta(weeks=1)).isoformat()
+        elif rtype == "biweekly":
+            new_deadline = (base + timedelta(weeks=2)).isoformat()
+        elif rtype == "monthly":
+            y = base.year + (base.month) // 12
+            m = (base.month % 12) + 1
+            last = calendar.monthrange(y, m)[1]
+            d = min(base.day, last)
+            new_deadline = date(y, m, d).isoformat()
+        elif rtype == "yearly":
+            try:
+                new_deadline = base.replace(year=base.year + 1).isoformat()
+            except ValueError:
+                new_deadline = date(base.year + 1, 3, 1).isoformat()
+        else:
+            return None
 
     conn = get_conn()
     if reset_finished:
         cur = conn.execute(
             "UPDATE tasks SET deadline = ?, finished = 0, finished_date = 'none' WHERE id = ?",
-            (new_deadline_fmt, task.id),
+            (new_deadline, task.id),
         )
     else:
         cur = conn.execute(
             "UPDATE tasks SET deadline = ? WHERE id = ?",
-            (new_deadline_fmt, task.id),
+            (new_deadline, task.id),
         )
     conn.commit()
     if cur.rowcount == 0:
@@ -221,7 +266,7 @@ def advance_deadline(task: Task, reset_finished: bool = True) -> Task | None:
 
 
 def mark_done(task_id: int) -> Task | None:
-    today = date.today().strftime("%d/%m/%Y")
+    today = date.today().isoformat()
     conn = get_conn()
     cur = conn.execute(
         "UPDATE tasks SET finished = 1, finished_date = ? WHERE id = ?",
@@ -233,7 +278,8 @@ def mark_done(task_id: int) -> Task | None:
 
     task = get_task(task_id)
     if task and task.repeatable and task.repeatable_type != "none":
-        task = advance_deadline(task, reset_finished=False)
+        reset = task.deadline == "none"
+        task = advance_deadline(task, reset_finished=reset)
 
     return task if task else None
 
@@ -251,7 +297,7 @@ def mark_not_done(task_id: int) -> Task | None:
 
 
 def reset_overdue_repeatables() -> int:
-    today = date.today().strftime("%d/%m/%Y")
+    today = date.today().isoformat()
     conn = get_conn()
     rows = conn.execute(
         "SELECT * FROM tasks WHERE repeatable = 1 AND finished = 1 AND deadline != 'none' AND deadline <= ?",
@@ -282,7 +328,7 @@ def get_tasks_due_on(date_str: str) -> list[Task]:
 
 
 def get_overdue_tasks() -> list[Task]:
-    today_str = date.today().strftime("%d/%m/%Y")
+    today_str = date.today().isoformat()
     conn = get_conn()
     rows = conn.execute(
         "SELECT * FROM tasks WHERE finished = 0 AND deadline != 'none' AND deadline < ?",
@@ -315,12 +361,11 @@ def search_tasks_global(query: str) -> list[dict]:
 
 
 def get_tasks_for_week() -> list[dict]:
-    from datetime import timedelta
     today = date.today()
     monday = today - timedelta(days=today.weekday())
     sunday = monday + timedelta(days=6)
-    monday_str = monday.strftime("%d/%m/%Y")
-    sunday_str = sunday.strftime("%d/%m/%Y")
+    monday_str = monday.isoformat()
+    sunday_str = sunday.isoformat()
     conn = get_conn()
     rows = conn.execute(
         """SELECT t.*, d.name AS dir_name, a.name AS arch_name
@@ -437,4 +482,5 @@ def _row_to_task(r) -> Task:
         finished_date=r["finished_date"],
         has_to_be_completed_to_repeat=bool(r["has_to_be_completed_to_repeat"]),
         repeat_on_specific_day=r["repeat_on_specific_day"],
+        position=r["position"],
     )

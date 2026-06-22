@@ -158,10 +158,6 @@ def run(args: list[str] | None = None):
             _handle_timer(action, opts)
         elif entity == "tag":
             _handle_tag(action, opts)
-        elif entity == "tui":
-            from .tui import run_tui as tui_run
-            tui_run()
-            return
     finally:
         close()
 
@@ -233,7 +229,7 @@ def _handle_task(action: str, opts):
         kwargs = {k: getattr(opts, k) for k in
                   ["name", "description", "deadline", "urgency", "difficulty",
                    "repeatable", "finished", "repeatable_type", "time_dedicated",
-                   "has_to_be_completed_to_repeat"]
+                   "has_to_be_completed_to_repeat", "repeat_on_specific_day"]
                   if getattr(opts, k) is not None}
         t = task_cmds.edit_task(opts.id, **kwargs)
         if t:
