@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
+import sys
+import tempfile
+import time
 from collections.abc import Callable
 from datetime import date, datetime
 from enum import Enum, auto
@@ -48,6 +53,35 @@ PALETTE = [
     ("pane_dim", "dark gray", "default"),
 ]
 
+_HIGHLIGHT_COLORS: list[tuple[str, str]] = [
+    ("default", "default"),
+    ("black", "black"),
+    ("dark blue", "dark blue"),
+    ("light blue", "light blue"),
+    ("dark green", "dark green"),
+    ("light green", "light green"),
+    ("dark red", "dark red"),
+    ("light red", "light red"),
+    ("brown", "brown"),
+    ("yellow", "yellow"),
+    ("dark magenta", "dark magenta"),
+    ("light magenta", "light magenta"),
+    ("dark cyan", "dark cyan"),
+    ("light cyan", "light cyan"),
+    ("dark gray", "dark gray"),
+    ("light gray", "light gray"),
+    ("white", "white"),
+]
+
+_HIGHLIGHT_ALIASES: dict[str, str] = {
+    "blue": "dark blue",
+    "green": "dark green",
+    "red": "dark red",
+    "magenta": "dark magenta",
+    "cyan": "dark cyan",
+    "gray": "dark gray",
+}
+
 COMMANDS = [
     "a", "add", "r", "remove", "d", "e", "edit", "f", "finish",
     "c", "cancel", "shf", "showFinished", "hf", "hideFinished",
@@ -55,7 +89,7 @@ COMMANDS = [
     "st", "ts", "timerStop", "pt", "pauseTimer", "rt", "resetTimer",
     "su a", "su d", "sd a", "sd d", "sn a", "sn d", "sdl a", "sdl d", "sr",
     "tag ", "untag ", "ft ", "gs ", "qa ", "mv ", "mu", "md", "all",
-    "export", "import ", "overdue", "schbar",
+    "export", "import ", "overdue", "schbar", "ai", "highlight",
     "bm", "bd", "bt ", "bv ", "bc",
 ]
 
@@ -104,7 +138,9 @@ HELP_TEXT = (
     "Stats & View:\n"
     "  :stats               Show task statistics\n"
     "  :week                Show tasks grouped by deadline this week\n"
-    "  :overdue             Show overdue tasks\n\n"
+    "  :overdue             Show overdue tasks\n"
+    "  :ai                  Open opencode with task context\n"
+    "  :highlight           Choose highlight beam color\n\n"
     "Undo:\n"
     "  :undo                Undo last delete / edit / finish\n\n"
     "Export/Import:\n"
@@ -153,6 +189,31 @@ def _pct_bar(pct: int, width: int) -> list:
 def _dur(secs: int) -> str:
     m, s = divmod(secs, 60)
     return f"{m}m{s:02}s" if m else f"{s}s"
+
+
+_TERMINAL_PRIORITY = [
+    "kitty", "alacritty", "wezterm", "gnome-terminal",
+    "konsole", "xfce4-terminal", "foot", "xterm",
+]
+
+
+def _detect_terminal() -> str | None:
+    for term in _TERMINAL_PRIORITY:
+        if shutil.which(term):
+            return term
+    if shutil.which("x-terminal-emulator"):
+        return "x-terminal-emulator"
+    return None
+
+
+def _build_terminal_cmd(terminal: str, cmd_str: str) -> list[str]:
+    if terminal == "kitty":
+        return ["kitty", "sh", "-c", cmd_str]
+    if terminal == "wezterm":
+        return ["wezterm", "start", "--", "sh", "-c", cmd_str]
+    if terminal == "gnome-terminal":
+        return [terminal, "--", "sh", "-c", cmd_str]
+    return [terminal, "-e", "sh", "-c", cmd_str]
 
 
 class CommandEdit(Edit):
@@ -235,6 +296,13 @@ class VimListBox(ListBox):
         return super().keypress(size, key)
 
 
+def _make_list_row(left_text: str, right_text: str, right_width: int,
+                    attr: str, focus_attr: str) -> AttrMap:
+    left = SelectableText(left_text, wrap="clip")
+    right = Text(right_text, align="right", wrap="clip")
+    return AttrMap(Columns([("weight", 1, left), (right_width, right)]), attr, focus_attr)
+
+
 DAYS_OF_WEEK = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
@@ -278,6 +346,43 @@ class DayPickerWidget(WidgetWrap):
             self.on_cancel()
             return None
         return key
+
+
+class ColorPickerWidget(WidgetWrap):
+    def __init__(
+        self,
+        colors: list[tuple[str, str]],
+        current: str,
+        on_select: Callable[[str], None],
+        on_cancel: Callable[[], None],
+    ) -> None:
+        self._colors = colors
+        self.on_select = on_select
+        self.on_cancel = on_cancel
+        self._idx = 0
+        for i, (name, _) in enumerate(colors):
+            if name == current:
+                self._idx = i
+                break
+        self._walker = SimpleFocusListWalker([])
+        for name, _ in colors:
+            self._walker.append(
+                AttrMap(SelectableText(f"  {name}"), "default", "focus")
+            )
+        self._listbox = ListBox(self._walker)
+        self._listbox.focus_position = self._idx
+        super().__init__(LineBox(self._listbox, title="Select highlight color"))
+
+    def keypress(self, size: tuple[int, int], key: str) -> str | None:
+        if key in ("enter", " "):
+            idx = self._listbox.focus_position
+            if idx < len(self._colors):
+                self.on_select(self._colors[idx][0])
+            return None
+        if key in ("esc", "q"):
+            self.on_cancel()
+            return None
+        return super().keypress(size, key)
 
 
 class NoTabColumns(Columns):
@@ -396,6 +501,28 @@ class TaskWatchTUI:
         self._all_tasks_mode: bool = False
         self._caption_alarm_handle: object | None = None
         self._current_prompt: str | tuple = ("standout", "\u276f ")
+        self._highlight_color: str = "default"
+        cfg_path = Path(__file__).resolve().parent.parent / "config" / "config.txt"
+        try:
+            with open(cfg_path) as f:
+                for line in f:
+                    if line.startswith("HIGHLIGHT:"):
+                        saved = line.split(":", 1)[1].strip()
+                        saved = _HIGHLIGHT_ALIASES.get(saved, saved)
+                        if saved in {n for n, _ in _HIGHLIGHT_COLORS}:
+                            self._highlight_color = saved
+                            for entry in PALETTE:
+                                if entry[0] == "focus":
+                                    urwid_bg = dict(_HIGHLIGHT_COLORS).get(saved, "default")
+                                    PALETTE[PALETTE.index(entry)] = (
+                                        entry[0], entry[1], urwid_bg, *entry[3:],
+                                    )
+                                    break
+        except OSError:
+            pass
+
+        self._timer_state_path = Path.home() / ".local" / "share" / "taskwatch" / "timer_state.json"
+        self._daemon_path = Path(__file__).resolve().parent / "timer_daemon.py"
 
         self._frame = MainFrame(self)
         self._loop = urwid.MainLoop(
@@ -456,10 +583,15 @@ class TaskWatchTUI:
                     [a.id for a in items],
                 ):
                     dir_counts[row["archive_id"]] = row["c"]
+            pairs: list[tuple[str, str]] = []
             for a in items:
                 cnt = dir_counts.get(a.id, 0)
-                w = AttrMap(SelectableText(f"\uf187 {a.name}  [{cnt}]"), "default", "focus")
-                self._list_walker.append(w)
+                pairs.append((f"\uf187 {a.name}", f"[{cnt}]"))
+            if pairs:
+                rw = max(len(r) for _, r in pairs) + 1
+                for left, right in pairs:
+                    w = _make_list_row(left, right, rw, "default", "focus")
+                    self._list_walker.append(w)
 
         elif self._level == Level.DIRECTORIES:
             self._set_breadcrumb(
@@ -483,10 +615,15 @@ class TaskWatchTUI:
                     [d.id for d in items],
                 ):
                     dir_stats[row["directory_id"]] = (row["total"], row["done"])
+            pairs: list[tuple[str, str]] = []
             for d in items:
                 total, done = dir_stats.get(d.id, (0, 0))
-                w = AttrMap(SelectableText(f"\uf4d3 {d.name}  [{done}/{total}]"), "default", "focus")
-                self._list_walker.append(w)
+                pairs.append((f"\uf4d3 {d.name}", f"[{done}/{total}]"))
+            if pairs:
+                rw = max(len(r) for _, r in pairs) + 1
+                for left, right in pairs:
+                    w = _make_list_row(left, right, rw, "default", "focus")
+                    self._list_walker.append(w)
 
         elif self._level == Level.TASKS:
             status = " [+done]" if self._show_finished else ""
@@ -538,6 +675,7 @@ class TaskWatchTUI:
                     ids,
                 ):
                     task_tags.setdefault(row["task_id"], []).append(row["name"])
+            pairs: list[tuple[str, str, str]] = []
             for t in items:
                 sel = "[x]" if t.id in self._bulk_selection else " "
                 prefix = "\u2713 " if t.finished else f"\u25cb{sel} "
@@ -545,15 +683,20 @@ class TaskWatchTUI:
                 tags = task_tags.get(t.id, [])
                 tag_str = f" [{','.join(tags)}]" if tags else ""
                 dir_str = f" [{dir_map[t.id]}]" if t.id in dir_map else ""
-                label = prefix + f"\ueebf {t.name}  [{cnt}]{tag_str}{dir_str}"
+                left = prefix + f"\ueebf {t.name}"
+                right = f"[{cnt}]{tag_str}{dir_str}"
                 selected = t.id in self._bulk_selection
                 if t.finished:
-                    w = AttrMap(SelectableText(label), "dim", "focus")
+                    pairs.append((left, right, "dim"))
                 elif selected:
-                    w = AttrMap(SelectableText(label), "focus", "focus")
+                    pairs.append((left, right, "focus"))
                 else:
-                    w = AttrMap(SelectableText(label), "default", "focus")
-                self._list_walker.append(w)
+                    pairs.append((left, right, "default"))
+            if pairs:
+                rw = max(len(r) for _, r, _ in pairs) + 1
+                for left, right, attr in pairs:
+                    w = _make_list_row(left, right, rw, attr, "focus")
+                    self._list_walker.append(w)
 
         elif self._level == Level.NOTES:
             self._set_breadcrumb(
@@ -965,6 +1108,12 @@ class TaskWatchTUI:
         if cmd == "schbar":
             self._show_schedule_bar()
             return
+        if cmd == "ai":
+            self._cmd_ai()
+            return
+        if cmd == "highlight":
+            self._show_highlight_picker()
+            return
         if cmd.startswith("gs "):
             query = cmd.split(" ", 1)[1].strip()
             if query:
@@ -1015,6 +1164,8 @@ class TaskWatchTUI:
             return
         if cmd in ("pt", "pauseTimer"):
             self._timer_paused = not self._timer_paused
+            self._write_timer_state({"paused": self._timer_paused})
+            self._update_clock_display()
             return
         if cmd in ("rt", "resetTimer"):
             self._stop_timer()
@@ -1986,6 +2137,150 @@ class TaskWatchTUI:
         )
         self._loop.widget = self._stats_overlay
 
+    def _get_terminal(self) -> str | None:
+        config_path = Path(__file__).resolve().parent.parent / "config" / "config.txt"
+        try:
+            with open(config_path) as f:
+                for line in f:
+                    if line.startswith("TERMINAL:"):
+                        return line.split(":", 1)[1].strip()
+        except OSError:
+            pass
+        term = _detect_terminal()
+        if term:
+            try:
+                with open(config_path, "a") as f:
+                    f.write(f"\nTERMINAL:{term}\n")
+            except OSError:
+                pass
+        return term
+
+    def _gather_ai_context(self) -> dict | None:
+        if self._level != Level.TASKS or self._selected_task_id is None:
+            return None
+        task = task_cmds.get_task(self._selected_task_id)
+        if not task:
+            return None
+        dir_name = None
+        arch_name = None
+        conn = db_mod.get_conn()
+        row = conn.execute(
+            "SELECT d.name AS dname, a.name AS aname FROM directories d "
+            "JOIN archives a ON a.id = d.archive_id WHERE d.id = ?",
+            (task.directory_id,),
+        ).fetchone()
+        if row:
+            dir_name = row["dname"]
+            arch_name = row["aname"]
+        notes = note_cmds.list_notes(task.id)
+        return {
+            "task": {
+                "name": task.name,
+                "description": task.description,
+                "deadline": task.deadline,
+                "urgency": task.urgency,
+                "difficulty": task.difficulty,
+                "time_dedicated": task.time_dedicated,
+                "repeatable": task.repeatable,
+                "repeatable_type": task.repeatable_type,
+                "repeat_on_specific_day": task.repeat_on_specific_day,
+                "finished": task.finished,
+            },
+            "directory": dir_name,
+            "archive": arch_name,
+            "notes": [{"date": n.date, "note": n.note} for n in notes],
+        }
+
+    def _cmd_ai(self) -> None:
+        if self._level != Level.TASKS or self._selected_task_id is None:
+            self._set_timed_caption("error", "Select a task first ")
+            return
+        opencode_path = shutil.which("opencode")
+        if not opencode_path:
+            self._set_timed_caption("error", "opencode not installed ")
+            return
+        terminal = self._get_terminal()
+        if not terminal:
+            self._set_timed_caption("error", "No terminal found ")
+            return
+        ctx = self._gather_ai_context()
+        if not ctx:
+            self._set_timed_caption("error", "Could not gather context ")
+            return
+        fd = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", prefix="taskwatch_ai_", delete=False,
+        )
+        with fd:
+            json.dump(ctx, fd, indent=2)
+            ctx_file = fd.name
+        project_root = Path(__file__).resolve().parent.parent
+        cmd = _build_terminal_cmd(
+            terminal,
+            f"{opencode_path} run -f '{ctx_file}' -i --dir '{project_root}'",
+        )
+        subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self._set_timed_caption("done", "Opening opencode... ")
+
+    def _show_highlight_picker(self) -> None:
+        current = self._highlight_color
+
+        def on_select(name: str) -> None:
+            self._set_highlight_color(name)
+            self._set_timed_caption("done", f"Highlight color: {name} ")
+
+        def on_cancel() -> None:
+            self._loop.widget = self._frame
+            self._set_timed_caption("done", "Cancelled ")
+
+        picker = ColorPickerWidget(
+            _HIGHLIGHT_COLORS, current, on_select, on_cancel,
+        )
+        self._stats_overlay = Overlay(
+            picker, self._frame,
+            align="center", width=("relative", 40),
+            valign="middle", height=("relative", 60),
+        )
+        self._loop.widget = self._stats_overlay
+
+    def _set_highlight_color(self, name: str) -> None:
+        urwid_bg = "default"
+        for cname, cbg in _HIGHLIGHT_COLORS:
+            if cname == name:
+                urwid_bg = cbg
+                break
+        for i, entry in enumerate(PALETTE):
+            if entry[0] == "focus":
+                PALETTE[i] = (entry[0], entry[1], urwid_bg, *entry[3:])
+                break
+        self._loop.widget = self._frame
+        self._loop.screen.register_palette(PALETTE)
+        self._loop.draw_screen()
+        self._highlight_color = name
+        config_path = Path(__file__).resolve().parent.parent / "config" / "config.txt"
+        try:
+            lines: list[str] = []
+            found = False
+            try:
+                with open(config_path) as f:
+                    lines = f.readlines()
+            except OSError:
+                pass
+            with open(config_path, "w") as f:
+                for line in lines:
+                    if line.startswith("HIGHLIGHT:"):
+                        f.write(f"HIGHLIGHT:{name}\n")
+                        found = True
+                    else:
+                        f.write(line)
+                if not found:
+                    f.write(f"HIGHLIGHT:{name}\n")
+        except OSError:
+            pass
+
     def _show_schedule_bar(self) -> None:
         if not self._timer_running or not self._timer_schedule:
             ow = LineBox(Text("  No active timer schedule"))
@@ -2190,12 +2485,32 @@ class TaskWatchTUI:
         schedule = timer_mod.compute_schedule(task)
         if "error" in schedule:
             return
+        total = schedule.get("total_seconds", sum(schedule.get("segments", [0])))
+        self._kill_daemon()
+        self._write_timer_state({
+            "running": True,
+            "mode": "scheduled",
+            "task_id": task.id,
+            "task_name": task.name,
+            "schedule": schedule,
+            "total_seconds": total,
+            "remaining": total,
+            "paused": False,
+            "stopped": False,
+            "start_time": time.time(),
+            "pause_elapsed": 0.0,
+            "segment_idx": 0,
+            "segment_elapsed": 0,
+        })
+        self._spawn_daemon()
         self._timer_running = True
         self._timer_schedule = schedule
         self._timer_segment_idx = 0
         self._timer_segment_elapsed = 0
         self._timer_paused = False
         self._timer_task_id = task.id
+        self._timer_seconds = total
+        self._timer_elapsed = 0
         self._update_clock_display()
 
     def _write_timer_file(self) -> None:
@@ -2244,9 +2559,92 @@ class TaskWatchTUI:
         except FileNotFoundError:
             pass
 
-    def _start_timer(self, minutes: int) -> None:
+    def _write_timer_state(self, updates: dict) -> None:
+        try:
+            current = {}
+            try:
+                with open(self._timer_state_path) as f:
+                    current = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                pass
+            current.update(updates)
+            tmp = self._timer_state_path.with_suffix(".tmp")
+            with open(tmp, "w") as f:
+                json.dump(current, f)
+            tmp.rename(self._timer_state_path)
+        except OSError:
+            pass
+
+    def _kill_daemon(self) -> None:
+        try:
+            with open(self._timer_state_path) as f:
+                old = json.load(f)
+            pid = old.get("pid")
+            if pid:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except (OSError, AttributeError):
+                    pass
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    def _spawn_daemon(self) -> None:
+        try:
+            subprocess.Popen(
+                [sys.executable, str(self._daemon_path)],
+                start_new_session=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except (OSError, ValueError):
+            pass
+
+    def _reconnect_timer(self) -> None:
+        try:
+            with open(self._timer_state_path) as f:
+                state = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return
+        if not state.get("running"):
+            return
+        pid = state.get("pid")
+        if pid:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                return
         self._timer_running = True
-        self._timer_seconds = minutes * 60
+        self._timer_paused = state.get("paused", False)
+        self._timer_seconds = state.get("total_seconds", 0)
+        if state.get("mode") == "scheduled":
+            self._timer_task_id = state.get("task_id")
+            self._timer_schedule = state.get("schedule")
+            self._timer_segment_idx = state.get("segment_idx", 0)
+            self._timer_segment_elapsed = state.get("segment_elapsed", 0)
+        else:
+            self._timer_task_id = None
+            self._timer_schedule = None
+            self._timer_segment_idx = 0
+            self._timer_segment_elapsed = 0
+
+    def _start_timer(self, minutes: int) -> None:
+        total = minutes * 60
+        self._kill_daemon()
+        self._write_timer_state({
+            "running": True,
+            "mode": "simple",
+            "minutes": minutes,
+            "total_seconds": total,
+            "remaining": total,
+            "paused": False,
+            "stopped": False,
+            "start_time": time.time(),
+            "pause_elapsed": 0.0,
+        })
+        self._spawn_daemon()
+        self._timer_running = True
+        self._timer_seconds = total
         self._timer_elapsed = 0
         self._timer_paused = False
         self._timer_task_id = None
@@ -2256,9 +2654,9 @@ class TaskWatchTUI:
         self._update_clock_display()
 
     def _stop_timer(self) -> None:
+        self._write_timer_state({"stopped": True})
         self._timer_running = False
         self._timer_seconds = 0
-        self._timer_elapsed = 0
         self._timer_paused = False
         self._timer_task_id = None
         self._timer_schedule = None
@@ -2304,32 +2702,20 @@ class TaskWatchTUI:
     def _tick(self, loop: object, data: object) -> None:
         try:
             timer_completed = False
-            if self._timer_running and not self._timer_paused:
-                if self._timer_schedule:
-                    segments = self._timer_schedule["segments"]
-                    self._timer_segment_elapsed += 1
-                    if self._timer_segment_elapsed >= segments[self._timer_segment_idx]:
-                        self._timer_segment_elapsed = 0
-                        self._timer_segment_idx += 1
-                        if self._timer_segment_idx >= len(segments):
-                            if self._timer_task_id is not None:
-                                task_cmds.mark_done(self._timer_task_id)
-                                task = task_cmds.get_task(self._timer_task_id)
-                                if task is not None:
-                                    self._notify_timer_done(task.name)
-                            self._stop_timer()
-                            timer_completed = True
+            if self._timer_running:
+                try:
+                    with open(self._timer_state_path) as f:
+                        state = json.load(f)
+                except (OSError, json.JSONDecodeError):
+                    state = {}
+                if not state.get("running"):
+                    self._stop_timer()
+                    timer_completed = True
                 else:
-                    self._timer_elapsed += 1
-                    if self._timer_elapsed >= self._timer_seconds:
-                        self._timer_elapsed = self._timer_seconds
-                        if self._timer_task_id is not None:
-                            task_cmds.mark_done(self._timer_task_id)
-                            task = task_cmds.get_task(self._timer_task_id)
-                            if task is not None:
-                                self._notify_timer_done(task.name)
-                        self._stop_timer()
-                        timer_completed = True
+                    self._timer_paused = state.get("paused", False)
+                    self._timer_segment_idx = state.get("segment_idx", 0)
+                    self._timer_segment_elapsed = state.get("segment_elapsed", 0)
+                    self._timer_elapsed = self._timer_seconds - state.get("remaining", 0)
 
             if timer_completed:
                 self._refresh_list()
@@ -2380,6 +2766,7 @@ class TaskWatchTUI:
                             self._notify_deadlines_enabled = v.strip().lower() == "true"
         except OSError:
             pass
+        self._reconnect_timer()
         self._refresh_list()
         urwid.connect_signal(self._list_walker, "modified", self._show_detail)
         self._loop.set_alarm_in(1, self._tick)

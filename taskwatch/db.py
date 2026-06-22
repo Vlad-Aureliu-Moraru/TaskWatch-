@@ -67,6 +67,7 @@ def get_conn() -> sqlite3.Connection:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         _connection = sqlite3.connect(str(DB_PATH))
         _connection.row_factory = sqlite3.Row
+        _connection.execute("PRAGMA journal_mode=WAL")
         _connection.executescript(SCHEMA_SQL)
         _migrate(_connection)
     return _connection
