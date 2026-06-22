@@ -201,7 +201,7 @@ def run_scheduled(schedule: dict, task_id: int, task_name: str, total_seconds: i
         time.sleep(1)
 
 
-if __name__ == "__main__":
+def main():
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
     state = _read_state()
@@ -218,3 +218,7 @@ if __name__ == "__main__":
         )
     else:
         run_simple(total, state.get("minutes", 10), state)
+
+
+if __name__ == "__main__":
+    main()

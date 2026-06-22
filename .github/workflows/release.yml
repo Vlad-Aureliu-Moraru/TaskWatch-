@@ -24,7 +24,13 @@ jobs:
 
       - name: Build with PyInstaller
         run: |
-          pyinstaller --onefile --name taskwatch --add-data "config:config" --collect-submodules urwid run.py
+          pyinstaller --onefile --name taskwatch \
+            --add-data "config:config" \
+            --collect-submodules urwid \
+            --hidden-import taskwatch.tui \
+            --hidden-import taskwatch.timer_daemon \
+            --hidden-import urwid \
+            run.py
 
       - name: Package release tarball
         run: |

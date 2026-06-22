@@ -1,7 +1,12 @@
 import argparse
+import json
 import sys
+from pathlib import Path
 from . import archive_cmds, directory_cmds, io_cmds, note_cmds, tag_cmds, task_cmds, timer
 from .db import close
+
+TIMER_FILE_PATH = Path("/tmp/taskwatch_timer.json")
+INACTIVE_DATA = {"text": "", "class": "inactive"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -122,6 +127,12 @@ def build_parser() -> argparse.ArgumentParser:
     # ── tui ──
     sub.add_parser("tui")
 
+    # ── daemon (hidden) ──
+    sub.add_parser("daemon", help=argparse.SUPPRESS)
+
+    # ── waybar ──
+    sub.add_parser("waybar", help="Output JSON for Waybar timer display")
+
     return parser
 
 
@@ -134,6 +145,15 @@ def run(args: list[str] | None = None):
     if entity == "tui":
         from .tui import run_tui as tui_run
         tui_run()
+        return
+
+    if entity == "daemon":
+        from . import timer_daemon
+        timer_daemon.main()
+        return
+
+    if entity == "waybar":
+        _handle_waybar()
         return
 
     if entity == "export":
@@ -298,6 +318,17 @@ def _handle_import(opts):
     print(result)
     if "failed" in result:
         sys.exit(1)
+
+
+def _handle_waybar():
+    try:
+        with open(TIMER_FILE_PATH) as f:
+            data = json.load(f)
+        sys.stdout.write(json.dumps(data) + "\n")
+        sys.stdout.flush()
+    except (OSError, json.JSONDecodeError):
+        sys.stdout.write(json.dumps(INACTIVE_DATA) + "\n")
+        sys.stdout.flush()
 
 
 def _handle_tag(action: str, opts):

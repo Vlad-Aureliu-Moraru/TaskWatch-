@@ -485,6 +485,7 @@ class TaskWatchTUI:
         self._timer_elapsed = 0
         self._timer_paused = False
         self._timer_task_id: int | None = None
+        self._timer_task_name: str | None = None
         self._timer_schedule: dict | None = None
         self._timer_segment_idx: int = 0
         self._timer_segment_elapsed: int = 0
@@ -2509,44 +2510,47 @@ class TaskWatchTUI:
         self._timer_segment_elapsed = 0
         self._timer_paused = False
         self._timer_task_id = task.id
+        self._timer_task_name = task.name
         self._timer_seconds = total
         self._timer_elapsed = 0
         self._update_clock_display()
 
     def _write_timer_file(self) -> None:
+        timer_path = Path("/tmp/taskwatch_timer.json")
         try:
             if not self._timer_running:
-                with open("/tmp/taskwatch_timer.json", "w") as f:
-                    json.dump({"text": "", "class": "inactive"}, f)
-                return
-            if self._timer_schedule:
-                segments = self._timer_schedule["segments"]
-                seg_dur = segments[self._timer_segment_idx]
-                remaining = max(0, seg_dur - self._timer_segment_elapsed)
-                if self._timer_segment_idx == 0:
-                    phase = "INTRO"
-                elif self._timer_segment_idx % 2 == 1:
-                    phase = "WORK"
+                data = {"text": "", "class": "inactive"}
+            else:
+                if self._timer_schedule:
+                    segments = self._timer_schedule["segments"]
+                    seg_dur = segments[self._timer_segment_idx]
+                    remaining = max(0, seg_dur - self._timer_segment_elapsed)
+                    if self._timer_segment_idx == 0:
+                        phase = "INTRO"
+                    elif self._timer_segment_idx % 2 == 1:
+                        phase = "WORK"
+                    else:
+                        phase = "BREAK"
                 else:
-                    phase = "BREAK"
-            else:
-                remaining = max(0, self._timer_seconds - self._timer_elapsed)
-                phase = "TIMER"
-            h, m = divmod(remaining, 3600)
-            m, s = divmod(m, 60)
-            pause = " ⏸" if self._timer_paused else ""
-            if h:
-                time_str = f"{h:02d}:{m:02d}:{s:02d}"
-            else:
-                time_str = f"{m:02d}:{s:02d}"
-            data = {
-                "text": f"⏱ {time_str}{pause}",
-                "alt": phase,
-                "class": f"timer-{phase.lower()}",
-                "tooltip": f"Timer: {phase} ({time_str} remaining)",
-            }
-            with open("/tmp/taskwatch_timer.json", "w") as f:
+                    remaining = max(0, self._timer_seconds - self._timer_elapsed)
+                    phase = "TIMER"
+                h, m = divmod(remaining, 3600)
+                m, s = divmod(m, 60)
+                pause = " ⏸" if self._timer_paused else ""
+                if h:
+                    time_str = f"{h:02d}:{m:02d}:{s:02d}"
+                else:
+                    time_str = f"{m:02d}:{s:02d}"
+                data = {
+                    "text": f"⏱ {time_str}{pause}",
+                    "alt": phase,
+                    "class": f"timer-{phase.lower()}",
+                    "tooltip": f"Timer: {phase} ({time_str} remaining)",
+                }
+            tmp = timer_path.with_suffix(".tmp")
+            with open(tmp, "w") as f:
                 json.dump(data, f)
+            tmp.rename(timer_path)
         except OSError:
             pass
 
@@ -2590,8 +2594,12 @@ class TaskWatchTUI:
 
     def _spawn_daemon(self) -> None:
         try:
+            if getattr(sys, 'frozen', False):
+                cmd = [sys.executable, 'daemon']
+            else:
+                cmd = [sys.executable, str(self._daemon_path)]
             subprocess.Popen(
-                [sys.executable, str(self._daemon_path)],
+                cmd,
                 start_new_session=True,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
@@ -2617,13 +2625,17 @@ class TaskWatchTUI:
         self._timer_running = True
         self._timer_paused = state.get("paused", False)
         self._timer_seconds = state.get("total_seconds", 0)
+        remaining = state.get("remaining")
+        self._timer_elapsed = max(0, self._timer_seconds - remaining) if remaining is not None else 0
         if state.get("mode") == "scheduled":
             self._timer_task_id = state.get("task_id")
+            self._timer_task_name = state.get("task_name")
             self._timer_schedule = state.get("schedule")
             self._timer_segment_idx = state.get("segment_idx", 0)
             self._timer_segment_elapsed = state.get("segment_elapsed", 0)
         else:
             self._timer_task_id = None
+            self._timer_task_name = None
             self._timer_schedule = None
             self._timer_segment_idx = 0
             self._timer_segment_elapsed = 0
@@ -2648,6 +2660,7 @@ class TaskWatchTUI:
         self._timer_elapsed = 0
         self._timer_paused = False
         self._timer_task_id = None
+        self._timer_task_name = None
         self._timer_schedule = None
         self._timer_segment_idx = 0
         self._timer_segment_elapsed = 0
@@ -2659,6 +2672,7 @@ class TaskWatchTUI:
         self._timer_seconds = 0
         self._timer_paused = False
         self._timer_task_id = None
+        self._timer_task_name = None
         self._timer_schedule = None
         self._timer_segment_idx = 0
         self._timer_segment_elapsed = 0
@@ -2703,6 +2717,10 @@ class TaskWatchTUI:
         try:
             timer_completed = False
             if self._timer_running:
+                # Increment locally first (fallback if daemon is dead)
+                if not self._timer_paused:
+                    self._timer_elapsed += 1
+
                 try:
                     with open(self._timer_state_path) as f:
                         state = json.load(f)
@@ -2712,10 +2730,41 @@ class TaskWatchTUI:
                     self._stop_timer()
                     timer_completed = True
                 else:
-                    self._timer_paused = state.get("paused", False)
-                    self._timer_segment_idx = state.get("segment_idx", 0)
-                    self._timer_segment_elapsed = state.get("segment_elapsed", 0)
-                    self._timer_elapsed = self._timer_seconds - state.get("remaining", 0)
+                    self._timer_paused = state.get("paused", self._timer_paused)
+
+                    daemon_remaining = state.get("remaining")
+                    if daemon_remaining is not None:
+                        daemon_elapsed = self._timer_seconds - daemon_remaining
+                        if daemon_elapsed > self._timer_elapsed:
+                            self._timer_elapsed = daemon_elapsed
+                            self._timer_segment_idx = state.get("segment_idx", 0)
+                            self._timer_segment_elapsed = state.get("segment_elapsed", 0)
+
+                # Local segment tracking (daemon-dead fallback for scheduled timers)
+                if self._timer_schedule and not state.get("paused", False):
+                    segments = self._timer_schedule["segments"]
+                    acc = 0
+                    for i, seg in enumerate(segments):
+                        if acc + seg > self._timer_elapsed:
+                            self._timer_segment_idx = i
+                            self._timer_segment_elapsed = self._timer_elapsed - acc
+                            break
+                        acc += seg
+
+                # Local completion detection (covers daemon-dead scenario)
+                if self._timer_running and self._timer_elapsed >= self._timer_seconds:
+                    if self._timer_task_name:
+                        self._notify_timer_done(f"{self._timer_task_name} ({self._timer_seconds // 60}m)")
+                    else:
+                        self._notify_timer_done(f"{self._timer_seconds // 60}-minute timer")
+                    if self._timer_task_id is not None:
+                        try:
+                            task_cmds.mark_done(self._timer_task_id)
+                        except Exception:
+                            pass
+                    self._write_timer_state({"running": False, "stopped": True})
+                    self._timer_running = False
+                    timer_completed = True
 
             if timer_completed:
                 self._refresh_list()
