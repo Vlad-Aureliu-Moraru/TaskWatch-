@@ -3,7 +3,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from . import archive_cmds, directory_cmds, io_cmds, note_cmds, tag_cmds, task_cmds, timer
+from . import ai_client, archive_cmds, directory_cmds, io_cmds, note_cmds, tag_cmds, task_cmds, timer
 from .db import close
 
 DATA_DIR = Path.home() / ".local" / "share" / "taskwatch"
@@ -138,6 +138,20 @@ def build_parser() -> argparse.ArgumentParser:
     # ── waybar ──
     sub.add_parser("waybar", help="Output JSON for Waybar timer display")
 
+    # ── ai ──
+    ai = sub.add_parser("ai")
+    ai_sub = ai.add_subparsers(dest="action", required=True)
+    ai_c = ai_sub.add_parser("connect")
+    ai_c.add_argument("provider")
+    ai_c.add_argument("key")
+    ai_d = ai_sub.add_parser("disconnect")
+    ai_d.add_argument("provider")
+    ai_sub.add_parser("providers")
+    ai_a = ai_sub.add_parser("ask")
+    ai_a.add_argument("question", nargs="+")
+    ai_sub.add_parser("chat")
+    ai_sub.add_parser("suggest")
+
     return parser
 
 
@@ -183,6 +197,8 @@ def run(args: list[str] | None = None):
             _handle_timer(action, opts)
         elif entity == "tag":
             _handle_tag(action, opts)
+        elif entity == "ai":
+            _handle_ai(action, opts)
     finally:
         close()
 
@@ -413,3 +429,230 @@ def _handle_tag(action: str, opts):
                     print(f"{tid}: {task.name}")
         else:
             print("No tasks with that tag")
+
+
+def _handle_ai(action: str, opts):
+    if action == "connect":
+        _ai_connect(opts.provider, opts.key)
+    elif action == "disconnect":
+        _ai_disconnect(opts.provider)
+    elif action == "providers":
+        _ai_providers()
+    elif action == "ask":
+        _ai_ask(" ".join(opts.question))
+    elif action == "chat":
+        _ai_chat()
+    elif action == "suggest":
+        _ai_suggest()
+
+
+def _ai_connect(provider: str, key: str) -> None:
+    ok, msg = ai_client.add_provider(provider, key)
+    print(msg)
+    if not ok:
+        sys.exit(1)
+
+
+def _ai_disconnect(provider: str) -> None:
+    ok, msg = ai_client.remove_provider(provider)
+    print(msg)
+    if not ok:
+        sys.exit(1)
+
+
+def _ai_providers() -> None:
+    providers = ai_client.list_providers()
+    if not providers:
+        print("No providers configured")
+        return
+    for p in providers:
+        mark = "\u2713" if p["enabled"] else "\u2717"
+        print(f"  {mark} {p['name']}: {p['model']} ({p['key']})")
+
+
+def _ai_ask(question: str) -> None:
+    providers = ai_client.list_providers()
+    if not providers:
+        print("No AI providers configured. Use: taskwatch ai connect <provider> <key>", file=sys.stderr)
+        sys.exit(1)
+
+    context = ai_client.build_cli_context()
+    _SYSTEM_PROMPT = (
+        "You are TaskWatch+ AI, an assistant integrated into a terminal task tracker. "
+        "You have full read access to the user's task data (shown below). "
+        "When the user asks you to create or modify data, use the >>>ACTION blocks shown below."
+    )
+    messages = [
+        {"role": "system", "content": _SYSTEM_PROMPT + "\n\n" + context},
+        {"role": "user", "content": question},
+    ]
+
+    response, provider, actions = ai_client.chat(messages)
+    print(response)
+
+    if actions:
+        _handle_cli_actions(actions)
+
+
+def _ai_chat() -> None:
+    providers = ai_client.list_providers()
+    if not providers:
+        print("No AI providers configured. Use: taskwatch ai connect <provider> <key>", file=sys.stderr)
+        sys.exit(1)
+
+    names = ", ".join(p["name"] for p in providers)
+    print(f"AI Chat \u2014 Connected: {names}")
+    print("Type 'exit' or 'quit' to end.")
+
+    context = ai_client.build_cli_context()
+    _SYSTEM_PROMPT = (
+        "You are TaskWatch+ AI, an assistant integrated into a terminal task tracker. "
+        "You have full read access to the user's task data (shown below). "
+        "When the user asks you to create or modify data, use the >>>ACTION blocks shown below."
+    )
+
+    history: list[dict] = []
+
+    while True:
+        try:
+            text = input("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+
+        if not text or text.lower() in ("exit", "quit"):
+            break
+
+        messages = [
+            {"role": "system", "content": _SYSTEM_PROMPT + "\n\n" + context},
+        ]
+        for msg in history[-10:]:
+            messages.append(msg)
+        messages.append({"role": "user", "content": text})
+
+        response, provider, actions = ai_client.chat(messages)
+        print(response)
+
+        if actions:
+            _handle_cli_actions(actions)
+
+        history.append({"role": "user", "content": text})
+        history.append({"role": "assistant", "content": response})
+
+
+def _ai_suggest() -> None:
+    providers = ai_client.list_providers()
+    if not providers:
+        print("No AI providers configured. Use: taskwatch ai connect <provider> <key>", file=sys.stderr)
+        sys.exit(1)
+
+    context = ai_client.build_cli_context()
+    _SYSTEM_PROMPT = (
+        "You are TaskWatch+ AI, an assistant integrated into a terminal task tracker. "
+        "You have full read access to the user's task data (shown below). "
+    )
+    messages = [
+        {"role": "system", "content": _SYSTEM_PROMPT + "\n\n" + context},
+        {"role": "user", "content": "What should I work on next? Consider urgency, deadlines, difficulty, and current progress."},
+    ]
+
+    response, provider, actions = ai_client.chat(messages)
+    if provider:
+        print(f"[{provider}]")
+    print(response)
+
+    if actions:
+        _handle_cli_actions(actions)
+
+
+def _handle_cli_actions(actions: list[dict]) -> None:
+    print("  \u2500\u2500 Proposed actions \u2500\u2500")
+    for i, a in enumerate(actions, 1):
+        label = a.get("type", "UNKNOWN").replace("_", " ").title()
+        params = ", ".join(f"{k}={v}" for k, v in a.items() if k != "type")
+        print(f"  {i}. {label}: {params}")
+    print("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
+
+    try:
+        confirm = input("  Confirm? [Y/n]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        confirm = "n"
+
+    if confirm in ("", "y", "yes"):
+        _execute_cli_actions(actions)
+    else:
+        print("  \u2717 Cancelled.")
+
+
+def _execute_cli_actions(actions: list[dict]) -> None:
+    from datetime import date
+
+    from . import archive_cmds, directory_cmds, note_cmds, task_cmds
+
+    for a in actions:
+        atype = a.get("type", "")
+        try:
+            if atype == "CREATE_TASK":
+                name = a.get("name", "New Task")
+                did_str = a.get("directory_id", "")
+                if did_str:
+                    did = int(did_str)
+                else:
+                    dirs = directory_cmds.list_directories()
+                    did = dirs[0].id if dirs else None
+                if did is None:
+                    print("  \u2717 No directory available for task creation")
+                    continue
+                task_cmds.create_task(
+                    directory_id=did,
+                    name=name,
+                    description=a.get("description", ""),
+                    deadline=a.get("deadline", "none"),
+                    urgency=int(a.get("urgency", 1)),
+                    difficulty=int(a.get("difficulty", 1)),
+                    time_dedicated=int(a.get("time_dedicated", 0)),
+                )
+                print(f"  \u2713 Task '{name}' created")
+
+            elif atype == "CREATE_DIRECTORY":
+                name = a.get("name", "New Directory")
+                aid_str = a.get("archive_id", "")
+                if aid_str:
+                    aid = int(aid_str)
+                else:
+                    archives = archive_cmds.list_archives()
+                    aid = archives[0].id if archives else None
+                if aid is None:
+                    print("  \u2717 No archive available for directory creation")
+                    continue
+                directory_cmds.create_directory(archive_id=aid, name=name)
+                print(f"  \u2713 Directory '{name}' created")
+
+            elif atype == "CREATE_ARCHIVE":
+                name = a.get("name", "New Archive")
+                archive_cmds.create_archive(name=name)
+                print(f"  \u2713 Archive '{name}' created")
+
+            elif atype == "FINISH_TASK":
+                tid_str = a.get("task_id", "")
+                if not tid_str:
+                    print("  \u2717 No task_id specified")
+                    continue
+                task_cmds.mark_done(int(tid_str))
+                print(f"  \u2713 Task {tid_str} finished")
+
+            elif atype == "ADD_NOTE":
+                tid_str = a.get("task_id", "")
+                if not tid_str:
+                    print("  \u2717 No task_id specified")
+                    continue
+                note = a.get("note", "")
+                note_cmds.create_note(int(tid_str), date.today().isoformat(), note)
+                print(f"  \u2713 Note added to task {tid_str}")
+
+            else:
+                print(f"  ? Unknown action type: {atype}")
+
+        except Exception as e:
+            print(f"  \u2717 Error executing {atype}: {e}")

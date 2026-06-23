@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import shutil
 import subprocess
 import sys
@@ -29,7 +30,7 @@ from urwid import (
     WidgetWrap,
 )
 
-from . import archive_cmds, calcurse_cmds, db as db_mod, directory_cmds, io_cmds, note_cmds, stats_cmds, tag_cmds, task_cmds, timer as timer_mod, undo_cmds
+from . import ai_client, ai_chat, archive_cmds, calcurse_cmds, db as db_mod, directory_cmds, io_cmds, note_cmds, stats_cmds, tag_cmds, task_cmds, timer as timer_mod, undo_cmds
 
 
 class Level(Enum):
@@ -51,6 +52,12 @@ PALETTE = [
     ("error", "dark red", "default"),
     ("help", "default", "default"),
     ("pane_dim", "dark gray", "default"),
+    ("c1", "dark green", "default"),
+    ("c2", "light green", "default"),
+    ("c3", "yellow", "default"),
+    ("c4", "light red", "default"),
+    ("c5", "dark red", "default"),
+    ("done_dir", "dark blue", "default"),
 ]
 
 _HIGHLIGHT_COLORS: list[tuple[str, str]] = [
@@ -89,7 +96,7 @@ COMMANDS = [
     "st", "ts", "timerStop", "pt", "pauseTimer", "rt", "resetTimer",
     "su a", "su d", "sd a", "sd d", "sn a", "sn d", "sdl a", "sdl d", "sr",
     "tag ", "untag ", "ft ", "gs ", "qa ", "mv ", "mu", "md", "all",
-    "export", "import ", "overdue", "schbar", "ai", "highlight",
+    "export", "import ", "overdue", "schbar", "ai", "aii", "highlight",
     "bm", "bd", "bt ", "bv ", "bc",
 ]
 
@@ -140,6 +147,10 @@ HELP_TEXT = (
     "  :week                Show tasks grouped by deadline this week\n"
     "  :overdue             Show overdue tasks\n"
     "  :ai                  Open opencode with task context\n"
+    "  :aii                 Open integrated AI chat\n"
+    "  :aii connect <p> <k>  Connect an AI provider (groq/gemini/mistral)\n"
+    "  :aii disconnect <p>   Remove an AI provider\n"
+    "  :aii providers        List configured providers\n"
     "  :highlight           Choose highlight beam color\n\n"
     "Undo:\n"
     "  :undo                Undo last delete / edit / finish\n\n"
@@ -167,6 +178,10 @@ def _bar(val: int, outof: int) -> list:
     if val < outof:
         result.append(("bar_e", "\u25a1" * (outof - val)))
     return result
+
+
+def _level_color(level: int) -> str:
+    return f"c{max(1, min(5, level))}"
 
 
 _HALF = ["", "\u258f", "\u258e", "\u258d", "\u258c", "\u258b", "\u258a", "\u2589"]
@@ -214,6 +229,22 @@ def _build_terminal_cmd(terminal: str, cmd_str: str) -> list[str]:
     if terminal == "gnome-terminal":
         return [terminal, "--", "sh", "-c", cmd_str]
     return [terminal, "-e", "sh", "-c", cmd_str]
+
+
+def _find_opencode() -> str | None:
+    path = shutil.which("opencode")
+    if path:
+        return path
+    home = Path.home()
+    for candidate in [
+        home / ".opencode" / "bin" / "opencode",
+        home / ".local" / "bin" / "opencode",
+        home / ".npm-global" / "bin" / "opencode",
+        Path("/usr/local/bin/opencode"),
+    ]:
+        if candidate.is_file() and os.access(str(candidate), os.X_OK):
+            return str(candidate)
+    return None
 
 
 class CommandEdit(Edit):
@@ -296,8 +327,10 @@ class VimListBox(ListBox):
         return super().keypress(size, key)
 
 
-def _make_list_row(left_text: str, right_text: str, right_width: int,
-                    attr: str, focus_attr: str) -> AttrMap:
+def _make_list_row(
+    left_text: str | list, right_text: str, right_width: int,
+    attr: str, focus_attr: str,
+) -> AttrMap:
     left = SelectableText(left_text, wrap="clip")
     right = Text(right_text, align="right", wrap="clip")
     return AttrMap(Columns([("weight", 1, left), (right_width, right)]), attr, focus_attr)
@@ -503,6 +536,8 @@ class TaskWatchTUI:
         self._caption_alarm_handle: object | None = None
         self._current_prompt: str | tuple = ("standout", "\u276f ")
         self._highlight_color: str = "default"
+        self._ai_inbox: queue.Queue = queue.Queue()
+        self._ai_chat_widget: ai_chat.AIChatWidget | None = None
         cfg_path = Path(__file__).resolve().parent.parent / "config" / "config.txt"
         try:
             with open(cfg_path) as f:
@@ -616,14 +651,17 @@ class TaskWatchTUI:
                     [d.id for d in items],
                 ):
                     dir_stats[row["directory_id"]] = (row["total"], row["done"])
-            pairs: list[tuple[str, str]] = []
+            pairs: list[tuple[str, str, str]] = []
             for d in items:
                 total, done = dir_stats.get(d.id, (0, 0))
-                pairs.append((f"\uf4d3 {d.name}", f"[{done}/{total}]"))
+                completed = total > 0 and done == total
+                icon = "󱥾" if completed else "\uf4d3"
+                attr = "done_dir" if completed else "default"
+                pairs.append((f"{icon} {d.name}", f"[{done}/{total}]", attr))
             if pairs:
-                rw = max(len(r) for _, r in pairs) + 1
-                for left, right in pairs:
-                    w = _make_list_row(left, right, rw, "default", "focus")
+                rw = max(len(r) for _, r, _ in pairs) + 1
+                for left, right, attr in pairs:
+                    w = _make_list_row(left, right, rw, attr, "focus")
                     self._list_walker.append(w)
 
         elif self._level == Level.TASKS:
@@ -684,14 +722,19 @@ class TaskWatchTUI:
                 tags = task_tags.get(t.id, [])
                 tag_str = f" [{','.join(tags)}]" if tags else ""
                 dir_str = f" [{dir_map[t.id]}]" if t.id in dir_map else ""
-                left = prefix + f"\ueebf {t.name}"
                 right = f"[{cnt}]{tag_str}{dir_str}"
                 selected = t.id in self._bulk_selection
                 if t.finished:
+                    left = prefix + f"\ueebf {t.name}"
                     pairs.append((left, right, "dim"))
                 elif selected:
+                    left = prefix + f"\ueebf {t.name}"
                     pairs.append((left, right, "focus"))
                 else:
+                    left = [
+                        (_level_color(t.urgency), prefix),
+                        (_level_color(t.difficulty), f"\ueebf {t.name}"),
+                    ]
                     pairs.append((left, right, "default"))
             if pairs:
                 rw = max(len(r) for _, r, _ in pairs) + 1
@@ -1111,6 +1154,12 @@ class TaskWatchTUI:
             return
         if cmd == "ai":
             self._cmd_ai()
+            return
+        if cmd == "aii":
+            self._cmd_aii_chat()
+            return
+        if cmd.startswith("aii "):
+            self._handle_aii_subcmd(cmd[4:].strip())
             return
         if cmd == "highlight":
             self._show_highlight_picker()
@@ -2196,7 +2245,7 @@ class TaskWatchTUI:
         if self._level != Level.TASKS or self._selected_task_id is None:
             self._set_timed_caption("error", "Select a task first ")
             return
-        opencode_path = shutil.which("opencode")
+        opencode_path = _find_opencode()
         if not opencode_path:
             self._set_timed_caption("error", "opencode not installed ")
             return
@@ -2225,6 +2274,103 @@ class TaskWatchTUI:
             stderr=subprocess.DEVNULL,
         )
         self._set_timed_caption("done", "Opening opencode... ")
+
+    def _cmd_aii_chat(self) -> None:
+        if self._ai_chat_widget is None:
+            self._ai_chat_widget = ai_chat.AIChatWidget(self)
+        overlay = Overlay(
+            self._ai_chat_widget, self._frame,
+            align="center", width=("relative", 85),
+            valign="middle", height=("relative", 85),
+        )
+        self._loop.widget = overlay
+
+    def _close_ai_chat(self) -> None:
+        self._loop.widget = self._frame
+        self._focus_body()
+        while not self._ai_inbox.empty():
+            try:
+                self._ai_inbox.get_nowait()
+            except queue.Empty:
+                break
+
+    def _handle_aii_subcmd(self, rest: str) -> None:
+        parts = rest.split()
+        if not parts:
+            self._show_provider_select()
+            return
+        subcmd = parts[0]
+        if subcmd == "connect":
+            if len(parts) >= 3:
+                name = parts[1]
+                key = " ".join(parts[2:])
+                ok, msg = ai_client.add_provider(name, key)
+                self._set_timed_caption("done" if ok else "error", msg)
+                return
+            self._show_provider_select()
+            return
+        if subcmd == "disconnect" and len(parts) >= 2:
+            name = parts[1]
+            ok, msg = ai_client.remove_provider(name)
+            self._set_timed_caption("done" if ok else "error", msg)
+            return
+        if subcmd == "providers":
+            providers = ai_client.list_providers()
+            if not providers:
+                self._set_timed_caption("dim", "No providers configured")
+            else:
+                info = " | ".join(
+                    f"{p['name']} ({p['model']}) {p['key']}"
+                    for p in providers
+                )
+                self._set_timed_caption("done", info)
+            return
+        self._set_timed_caption(
+            "error",
+            "Usage: aii connect | aii disconnect <name> | aii providers",
+        )
+
+    def _show_provider_select(self) -> None:
+        def on_select(name: str) -> None:
+            self._loop.widget = self._frame
+            self._frame.focus_position = "footer"
+            self._start_wizard(
+                f"{name} key: ",
+                lambda text: self._on_provider_key_entered(name, text),
+            )
+
+        def on_cancel() -> None:
+            self._loop.widget = self._frame
+            self._focus_body()
+
+        picker = ai_chat.ProviderSelectWidget(on_select, on_cancel)
+        overlay = Overlay(
+            picker, self._frame,
+            align="center", width=("relative", 40),
+            valign="middle", height=("relative", 40),
+        )
+        self._loop.widget = overlay
+
+    def _on_provider_key_entered(self, name: str, key: str) -> None:
+        if not key.strip():
+            self._start_wizard(
+                f"{name} key: ",
+                lambda text: self._on_provider_key_entered(name, text),
+            )
+            return
+        ok, msg = ai_client.test_provider(name, key)
+        if not ok:
+            self._set_timed_caption("error", msg + " ")
+            self._start_wizard(
+                f"{name} key: ",
+                lambda text: self._on_provider_key_entered(name, text),
+            )
+            return
+        add_ok, add_msg = ai_client.add_provider(name, key)
+        if add_ok:
+            self._end_wizard(f"{name} key tested successfully \u2014 provider connected")
+        else:
+            self._end_wizard(add_msg, "error")
 
     def _show_highlight_picker(self) -> None:
         current = self._highlight_color
@@ -2449,6 +2595,12 @@ class TaskWatchTUI:
     def _start_wizard(
         self, prompt: str | tuple, handler: Callable[[str], None]
     ) -> None:
+        if self._caption_alarm_handle is not None:
+            try:
+                self._loop.remove_alarm(self._caption_alarm_handle)
+            except Exception:
+                pass
+            self._caption_alarm_handle = None
         if self._prompt_handler is not None:
             self._wizard_stack.append({
                 "prompt": self._current_prompt,
@@ -2469,11 +2621,14 @@ class TaskWatchTUI:
         self._cmd.set_caption(entry["prompt"])
         self._cmd.set_edit_text("")
 
-    def _end_wizard(self) -> None:
+    def _end_wizard(self, message: str | None = None, attr: str = "done") -> None:
         self._prompt_handler = None
         self._wizard_stack.clear()
-        self._current_prompt = ("standout", "\u276f ")
-        self._cmd.set_caption(("standout", "\u276f "))
+        if message:
+            self._set_timed_caption(attr, message + " ")
+        else:
+            self._current_prompt = ("standout", "\u276f ")
+            self._cmd.set_caption(("standout", "\u276f "))
         self._refresh_list()
         self._show_detail()
         try:
@@ -2716,6 +2871,16 @@ class TaskWatchTUI:
 
     def _tick(self, loop: object, data: object) -> None:
         try:
+            while True:
+                try:
+                    cb = self._ai_inbox.get_nowait()
+                    try:
+                        cb()
+                    except Exception:
+                        pass
+                except queue.Empty:
+                    break
+
             timer_completed = False
             if self._timer_running:
                 # Increment locally first (fallback if daemon is dead)
