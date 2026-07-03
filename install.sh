@@ -23,7 +23,7 @@ if [ -z "$TERMINAL" ]; then
     echo "Error: no supported terminal found"
     exit 1
 fi
-sed "s|^Exec=.*|Exec=${TERMINAL} -e ${BIN_DIR}/taskwatch tui|" taskwatch.desktop > "$APP_DIR/taskwatch.desktop"
+sed -e "s|^Exec=.*|Exec=${TERMINAL} -e ${BIN_DIR}/taskwatch tui|" -e "s|^Terminal=true|Terminal=false|" taskwatch.desktop > "$APP_DIR/taskwatch.desktop"
 
 cp TaskWatch+.png "$ICON_DIR/"
 

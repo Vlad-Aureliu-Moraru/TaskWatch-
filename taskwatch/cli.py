@@ -97,6 +97,10 @@ def build_parser() -> argparse.ArgumentParser:
     nc.add_argument("note")
     nd = n_sub.add_parser("delete")
     nd.add_argument("id", type=int)
+    ne = n_sub.add_parser("edit")
+    ne.add_argument("id", type=int)
+    ne.add_argument("--date", default=None)
+    ne.add_argument("--note", default=None)
 
     # ── timer ──
     tm = sub.add_parser("timer")
@@ -312,6 +316,14 @@ def _handle_note(action: str, opts):
     elif action == "delete":
         if note_cmds.delete_note(opts.id):
             print(f"Deleted note {opts.id}")
+        else:
+            print(f"Note {opts.id} not found", file=sys.stderr)
+            sys.exit(1)
+    elif action == "edit":
+        kwargs = {k: getattr(opts, k) for k in ["date", "note"] if getattr(opts, k) is not None}
+        n = note_cmds.update_note(opts.id, **kwargs)
+        if n:
+            print(f"Updated note {n.id}")
         else:
             print(f"Note {opts.id} not found", file=sys.stderr)
             sys.exit(1)

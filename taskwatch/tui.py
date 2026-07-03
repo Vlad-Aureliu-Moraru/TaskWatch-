@@ -1708,6 +1708,13 @@ class TaskWatchTUI:
         note_cmds.create_note(self._selected_task_id, today, content)
         self._end_wizard()
 
+    def _wiz_edit_note(self, note_id: int, content: str) -> None:
+        if not content:
+            self._end_wizard()
+            return
+        note_cmds.update_note(note_id, note=content)
+        self._end_wizard()
+
     def _cmd_remove(self) -> None:
         sid = self._get_selected_id()
         if sid is None:
@@ -1782,6 +1789,13 @@ class TaskWatchTUI:
             )
         elif self._level == Level.TASKS and self._selected_task_id is not None:
             self._edit_task(sid)
+        elif self._level == Level.NOTES:
+            note = note_cmds.get_note(sid)
+            if note:
+                self._start_wizard(
+                    f"Edit note [{note.note[:60]}]: ",
+                    partial(self._wiz_edit_note, sid),
+                )
 
     def _wiz_edit_archive(
         self, archive_id: int, old_name: str, new_name: str
