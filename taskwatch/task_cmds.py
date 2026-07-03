@@ -296,18 +296,43 @@ def mark_not_done(task_id: int) -> Task | None:
     return get_task(task_id)
 
 
+def _advance_until_current(task: Task) -> bool:
+    today = date.today().isoformat()
+    advanced = False
+    for _ in range(50):
+        if task.deadline == "none" or task.deadline > today:
+            break
+        new_task = advance_deadline(task, reset_finished=False)
+        if new_task is None:
+            break
+        task = new_task
+        advanced = True
+    return advanced
+
+
 def reset_overdue_repeatables() -> int:
     today = date.today().isoformat()
     conn = get_conn()
+    count = 0
+
     rows = conn.execute(
         "SELECT * FROM tasks WHERE repeatable = 1 AND finished = 1 AND deadline != 'none' AND deadline <= ?",
         (today,),
     ).fetchall()
-    count = 0
     for r in rows:
         task = _row_to_task(r)
         if advance_deadline(task):
             count += 1
+
+    rows = conn.execute(
+        "SELECT * FROM tasks WHERE repeatable = 1 AND finished = 0 AND has_to_be_completed_to_repeat = 0 AND deadline != 'none' AND deadline <= ?",
+        (today,),
+    ).fetchall()
+    for r in rows:
+        task = _row_to_task(r)
+        if _advance_until_current(task):
+            count += 1
+
     return count
 
 

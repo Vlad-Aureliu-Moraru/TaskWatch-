@@ -97,7 +97,8 @@ COMMANDS = [
     "su a", "su d", "sd a", "sd d", "sn a", "sn d", "sdl a", "sdl d", "sr",
     "tag ", "untag ", "ft ", "gs ", "qa ", "mv ", "mu", "md", "all",
     "export", "import ", "overdue", "schbar", "ai", "aii", "highlight",
-    "bm", "bd", "bt ", "bv ", "bc",
+    "bm", "bd", "bt ", "bv ", "bc", "y", "sound", "sound on", "sound off",
+    "sound work ", "sound break ", "sound done ",
 ]
 
 HELP_TEXT = (
@@ -156,13 +157,22 @@ HELP_TEXT = (
     "  :undo                Undo last delete / edit / finish\n\n"
     "Export/Import:\n"
     "  :export [path]        Export all data as JSON\n"
-    "  :import <path>        Import data from JSON\n\n"
+    "  :import <path>        Import data from JSON\n"
+    "  :y                   Copy selected item to clipboard as JSON\n"
+    "                       (task: details+notes, dir: all tasks, archive: all dirs+tasks)\n"
+    "                       (bulk-select tasks with Space first to copy all selected)\n\n"
     "Timer:\n"
     "  :st <minutes>          Start countdown timer\n"
     "  :ts | :timerStop      Stop timer\n"
     "  :pt | :pauseTimer     Pause / unpause timer\n"
     "  :rt | :resetTimer     Reset timer\n"
     "  :schbar               Show timer schedule bar\n\n"
+    "Sound:\n"
+    "  :sound               Toggle timer sounds on/off\n"
+    "  :sound on | :sound off  Explicit enable/disable\n"
+    "  :sound work <path>    Set custom work-end sound file\n"
+    "  :sound break <path>   Set custom break-end sound file\n"
+    "  :sound done <path>    Set custom timer-done sound file\n\n"
     "Sort (task list only):\n"
     "  :su a | :su d         Sort by urgency asc / desc\n"
     "  :sd a | :sd d         Sort by difficulty asc / desc\n"
@@ -171,6 +181,103 @@ HELP_TEXT = (
     "  :sr                   Reset to default order\n\n"
     "Press any key to close."
 )
+
+
+def _copy_to_clipboard(text: str) -> bool:
+    data = text.encode()
+    for cmd in (
+        ["wl-copy", "--foreground"],
+        ["xclip", "-selection", "clipboard"],
+        ["xsel", "--clipboard", "--input"],
+        ["pbcopy"],
+    ):
+        try:
+            proc = subprocess.run(
+                cmd, input=data, capture_output=True, timeout=5,
+            )
+            if proc.returncode == 0:
+                return True
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+    # Fallback: try wl-copy without --foreground via Popen
+    try:
+        proc = subprocess.Popen(
+            ["wl-copy"], stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        proc.stdin.write(data)
+        proc.stdin.close()
+        proc.wait(timeout=3)
+        if proc.returncode == 0:
+            return True
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return False
+
+
+import math as _math
+import struct as _struct
+import wave as _wave
+
+_SOUND_DIR = Path.home() / ".local" / "share" / "taskwatch" / "sounds"
+
+def _generate_wav(path: Path, freq: float, duration: float, decay: float = 8) -> None:
+    sample_rate = 44100
+    num_samples = int(sample_rate * duration)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _wave.open(str(path), "w") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sample_rate)
+        for i in range(num_samples):
+            t = i / sample_rate
+            amp = int(32767 * 0.5 ** (t * decay) * _math.sin(2 * _math.pi * freq * t))
+            w.writeframes(_struct.pack("<h", amp))
+
+def _ensure_default_sounds() -> dict[str, Path]:
+    _SOUND_DIR.mkdir(parents=True, exist_ok=True)
+    default_sounds = {
+        "work":  _SOUND_DIR / "work_end.wav",
+        "break": _SOUND_DIR / "break_end.wav",
+        "done":  _SOUND_DIR / "timer_done.wav",
+    }
+    if not default_sounds["work"].is_file():
+        _generate_wav(default_sounds["work"], 880, 0.3, 8)
+    if not default_sounds["break"].is_file():
+        _generate_wav(default_sounds["break"], 440, 0.2, 6)
+    if not default_sounds["done"].is_file():
+        _generate_multi_tone_wav(default_sounds["done"], [(880, 0.15), (1320, 0.15)], 10)
+    return default_sounds
+
+def _generate_multi_tone_wav(path: Path, tones: list[tuple[float, float]], decay: float = 10) -> None:
+    sample_rate = 44100
+    num_samples = sum(int(sample_rate * d) for _, d in tones)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _wave.open(str(path), "w") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sample_rate)
+        for freq, dur in tones:
+            for i in range(int(sample_rate * dur)):
+                t = i / sample_rate
+                amp = int(32767 * 0.5 ** (t * decay) * _math.sin(2 * _math.pi * freq * t))
+                w.writeframes(_struct.pack("<h", amp))
+
+def _play_sound(path: Path) -> None:
+    if not path or not path.is_file():
+        return
+    for cmd in (
+        ["paplay", str(path)],
+        ["aplay", str(path)],
+        ["ffplay", "-nodisp", "-autoexit", str(path)],
+    ):
+        try:
+            proc = subprocess.run(cmd, capture_output=True, timeout=5)
+            if proc.returncode == 0:
+                return
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+    sys.stderr.write("\a")
 
 
 def _bar(val: int, outof: int) -> list:
@@ -522,6 +629,9 @@ class TaskWatchTUI:
         self._timer_schedule: dict | None = None
         self._timer_segment_idx: int = 0
         self._timer_segment_elapsed: int = 0
+        self._prev_timer_segment_idx: int = 0
+        self._sound_enabled: bool = True
+        self._sound_paths: dict[str, Path] = _ensure_default_sounds()
         self._tick_counter: int = 0
         self._filter_text: str = ""
         self._in_search_mode: bool = False
@@ -554,6 +664,20 @@ class TaskWatchTUI:
                                         entry[0], entry[1], urwid_bg, *entry[3:],
                                     )
                                     break
+                    elif line.startswith("SOUND_ENABLED:"):
+                        self._sound_enabled = line.split(":", 1)[1].strip().lower() == "true"
+                    elif line.startswith("SOUND_WORK:"):
+                        p = line.split(":", 1)[1].strip()
+                        if p:
+                            self._sound_paths["work"] = Path(p)
+                    elif line.startswith("SOUND_BREAK:"):
+                        p = line.split(":", 1)[1].strip()
+                        if p:
+                            self._sound_paths["break"] = Path(p)
+                    elif line.startswith("SOUND_DONE:"):
+                        p = line.split(":", 1)[1].strip()
+                        if p:
+                            self._sound_paths["done"] = Path(p)
         except OSError:
             pass
 
@@ -995,6 +1119,9 @@ class TaskWatchTUI:
             self._show_finished = False
             self._refresh_list()
             return
+        if cmd == "y":
+            self._cmd_copy()
+            return
         if cmd in ("c", "cancel"):
             self._prompt_handler = None
             self._wizard_stack.clear()
@@ -1219,6 +1346,18 @@ class TaskWatchTUI:
             return
         if cmd in ("rt", "resetTimer"):
             self._stop_timer()
+            return
+        if cmd == "sound":
+            self._cmd_sound_toggle()
+            return
+        if cmd == "sound on":
+            self._cmd_sound_set_enabled(True)
+            return
+        if cmd == "sound off":
+            self._cmd_sound_set_enabled(False)
+            return
+        if cmd.startswith("sound "):
+            self._cmd_sound_custom(cmd[6:])
             return
 
         if cmd in ("su a", "su d"):
@@ -2205,6 +2344,133 @@ class TaskWatchTUI:
                 pass
         return term
 
+    def _build_task_json(self, task_id: int) -> dict:
+        task = task_cmds.get_task(task_id)
+        if not task:
+            return {}
+        conn = db_mod.get_conn()
+        row = conn.execute(
+            "SELECT d.name AS dir_name, a.name AS arch_name FROM directories d "
+            "JOIN archives a ON a.id = d.archive_id WHERE d.id = ?",
+            (task.directory_id,),
+        ).fetchone()
+        notes = note_cmds.list_notes(task_id)
+        tags = tag_cmds.get_tags_for_task(task_id)
+        return {
+            "task": {
+                "id": task.id,
+                "directory_id": task.directory_id,
+                "name": task.name,
+                "description": task.description,
+                "urgency": task.urgency,
+                "difficulty": task.difficulty,
+                "time_dedicated": task.time_dedicated,
+                "deadline": task.deadline,
+                "repeatable": task.repeatable,
+                "repeatable_type": task.repeatable_type,
+                "repeat_on_specific_day": task.repeat_on_specific_day,
+                "finished": task.finished,
+                "finished_date": task.finished_date,
+                "position": task.position,
+            },
+            "directory": row["dir_name"] if row else None,
+            "archive": row["arch_name"] if row else None,
+            "notes": [
+                {"id": n.id, "date": n.date, "note": n.note}
+                for n in notes
+            ],
+            "tags": [t.name for t in tags],
+        }
+
+    def _cmd_copy(self) -> None:
+        if self._level == Level.NOTES:
+            idx = self._list_box.focus_position
+            if not self._current_items or idx >= len(self._current_items):
+                self._set_timed_caption("error", "Nothing selected ")
+                return
+            n = self._current_items[idx]
+            data = {"id": n.id, "date": n.date, "note": n.note}
+
+        elif self._level == Level.TASKS:
+            if self._bulk_selection:
+                tasks_data = []
+                for tid in list(self._bulk_selection):
+                    td = self._build_task_json(tid)
+                    if td:
+                        tasks_data.append(td)
+                data = tasks_data
+            else:
+                sid = self._get_selected_id()
+                if sid is None:
+                    self._set_timed_caption("error", "Nothing selected ")
+                    return
+                data = self._build_task_json(sid)
+
+        elif self._level == Level.DIRECTORIES:
+            sid = self._get_selected_id()
+            if sid is None:
+                self._set_timed_caption("error", "Nothing selected ")
+                return
+            conn = db_mod.get_conn()
+            d = conn.execute(
+                "SELECT id, archive_id, name FROM directories WHERE id = ?",
+                (sid,),
+            ).fetchone()
+            if not d:
+                self._set_timed_caption("error", "Nothing selected ")
+                return
+            tasks_raw = task_cmds.list_tasks(directory_id=sid)
+            tasks_data = [
+                self._build_task_json(t.id) for t in tasks_raw
+            ]
+            data = {
+                "directory": {"id": d["id"], "archive_id": d["archive_id"], "name": d["name"]},
+                "tasks": tasks_data,
+            }
+
+        elif self._level == Level.ARCHIVES:
+            sid = self._get_selected_id()
+            if sid is None:
+                self._set_timed_caption("error", "Nothing selected ")
+                return
+            conn = db_mod.get_conn()
+            a = conn.execute(
+                "SELECT id, name FROM archives WHERE id = ?",
+                (sid,),
+            ).fetchone()
+            if not a:
+                self._set_timed_caption("error", "Nothing selected ")
+                return
+            dirs = directory_cmds.list_directories(archive_id=sid)
+            directories_data = []
+            for d in dirs:
+                tasks_raw = task_cmds.list_tasks(directory_id=d.id)
+                tasks_data = [
+                    self._build_task_json(t.id) for t in tasks_raw
+                ]
+                directories_data.append({
+                    "directory": {"id": d.id, "name": d.name},
+                    "tasks": tasks_data,
+                })
+            data = {
+                "archive": {"id": a["id"], "name": a["name"]},
+                "directories": directories_data,
+            }
+        else:
+            return
+
+        raw = json.dumps(data, indent=2, default=str)
+        if _copy_to_clipboard(raw):
+            name = self._get_selected_name() or ""
+            if self._bulk_selection:
+                self._set_timed_caption("done", f"Copied {len(self._bulk_selection)} tasks to clipboard ")
+            elif name:
+                self._set_timed_caption("done", f"Copied '{name}' to clipboard ")
+            else:
+                self._set_timed_caption("done", "Copied to clipboard ")
+        else:
+            self._set_timed_caption("error", "Clipboard tools not found (wl-copy/xclip/xsel) ")
+
     def _gather_ai_context(self) -> dict | None:
         if self._level != Level.TASKS or self._selected_task_id is None:
             return None
@@ -2663,6 +2929,7 @@ class TaskWatchTUI:
         self._timer_schedule = schedule
         self._timer_segment_idx = 0
         self._timer_segment_elapsed = 0
+        self._prev_timer_segment_idx = 0
         self._timer_paused = False
         self._timer_task_id = task.id
         self._timer_task_name = task.name
@@ -2820,6 +3087,7 @@ class TaskWatchTUI:
         self._timer_schedule = None
         self._timer_segment_idx = 0
         self._timer_segment_elapsed = 0
+        self._prev_timer_segment_idx = 0
         self._update_clock_display()
 
     def _stop_timer(self) -> None:
@@ -2832,8 +3100,90 @@ class TaskWatchTUI:
         self._timer_schedule = None
         self._timer_segment_idx = 0
         self._timer_segment_elapsed = 0
+        self._prev_timer_segment_idx = 0
         self._update_clock_display()
         self._write_timer_file()
+
+    def _cmd_sound_toggle(self) -> None:
+        self._sound_enabled = not self._sound_enabled
+        self._set_timed_caption(
+            "done" if self._sound_enabled else "dim",
+            f"Sound {'on' if self._sound_enabled else 'off'} ",
+        )
+        self._write_sound_config()
+
+    def _cmd_sound_set_enabled(self, enabled: bool) -> None:
+        self._sound_enabled = enabled
+        self._set_timed_caption(
+            "done" if enabled else "dim",
+            f"Sound {'on' if enabled else 'off'} ",
+        )
+        self._write_sound_config()
+
+    def _cmd_sound_custom(self, arg: str) -> None:
+        parts = arg.split(None, 1)
+        if len(parts) != 2:
+            self._set_timed_caption("error", "Usage: sound work/break/done <path> ")
+            return
+        key, path_str = parts[0].lower(), parts[1]
+        if key not in ("work", "break", "done"):
+            self._set_timed_caption("error", "Key must be work, break, or done ")
+            return
+        p = Path(path_str).expanduser().resolve()
+        if not p.is_file():
+            self._set_timed_caption("error", f"File not found: {p} ")
+            return
+        self._sound_paths[key] = p
+        self._write_sound_config()
+        self._set_timed_caption("done", f"Sound '{key}' set to {p.name} ")
+
+    def _write_sound_config(self) -> None:
+        cfg_path = Path(__file__).resolve().parent.parent / "config" / "config.txt"
+        try:
+            with open(cfg_path) as f:
+                lines = f.readlines()
+            written = {"SOUND_ENABLED": False, "SOUND_WORK": False, "SOUND_BREAK": False, "SOUND_DONE": False}
+            with open(cfg_path, "w") as f:
+                for line in lines:
+                    key = line.split(":", 1)[0].strip() if ":" in line else ""
+                    if key == "SOUND_ENABLED":
+                        f.write(f"SOUND_ENABLED:{str(self._sound_enabled).lower()}\n")
+                        written["SOUND_ENABLED"] = True
+                    elif key == "SOUND_WORK":
+                        p = self._sound_paths.get("work")
+                        if p and str(p).startswith(str(_SOUND_DIR)):
+                            f.write("SOUND_WORK:\n")
+                        else:
+                            f.write(f"SOUND_WORK:{p}\n" if p else "SOUND_WORK:\n")
+                        written["SOUND_WORK"] = True
+                    elif key == "SOUND_BREAK":
+                        p = self._sound_paths.get("break")
+                        if p and str(p).startswith(str(_SOUND_DIR)):
+                            f.write("SOUND_BREAK:\n")
+                        else:
+                            f.write(f"SOUND_BREAK:{p}\n" if p else "SOUND_BREAK:\n")
+                        written["SOUND_BREAK"] = True
+                    elif key == "SOUND_DONE":
+                        p = self._sound_paths.get("done")
+                        if p and str(p).startswith(str(_SOUND_DIR)):
+                            f.write("SOUND_DONE:\n")
+                        else:
+                            f.write(f"SOUND_DONE:{p}\n" if p else "SOUND_DONE:\n")
+                        written["SOUND_DONE"] = True
+                    else:
+                        f.write(line)
+                for k in ("SOUND_ENABLED", "SOUND_WORK", "SOUND_BREAK", "SOUND_DONE"):
+                    if not written[k]:
+                        if k == "SOUND_ENABLED":
+                            f.write(f"SOUND_ENABLED:{str(self._sound_enabled).lower()}\n")
+                        elif k == "SOUND_WORK":
+                            f.write("SOUND_WORK:\n")
+                        elif k == "SOUND_BREAK":
+                            f.write("SOUND_BREAK:\n")
+                        elif k == "SOUND_DONE":
+                            f.write("SOUND_DONE:\n")
+        except OSError:
+            pass
 
     def _update_clock_display(self) -> None:
         now = datetime.now()
@@ -2917,6 +3267,17 @@ class TaskWatchTUI:
                             break
                         acc += seg
 
+                # Segment transition sound detection
+                if self._sound_enabled and self._timer_schedule and not self._timer_paused:
+                    new_idx = self._timer_segment_idx
+                    old_idx = self._prev_timer_segment_idx
+                    if new_idx != old_idx and old_idx >= 0:
+                        if old_idx % 2 == 1:
+                            _play_sound(self._sound_paths.get("work"))
+                        elif old_idx > 0 and old_idx % 2 == 0:
+                            _play_sound(self._sound_paths.get("break"))
+                    self._prev_timer_segment_idx = new_idx
+
                 # Local completion detection (covers daemon-dead scenario)
                 if self._timer_running and self._timer_elapsed >= self._timer_seconds:
                     if self._timer_task_name:
@@ -2933,6 +3294,8 @@ class TaskWatchTUI:
                     timer_completed = True
 
             if timer_completed:
+                if self._sound_enabled:
+                    _play_sound(self._sound_paths.get("done"))
                 self._refresh_list()
                 self._show_detail()
 
