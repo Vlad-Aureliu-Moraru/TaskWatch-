@@ -5,9 +5,9 @@ import os
 import ssl
 import urllib.error
 import urllib.request
-from pathlib import Path
 
-AI_CONFIG_PATH = Path.home() / ".local" / "share" / "taskwatch" / "ai_config.json"
+from .paths import AI_CONFIG_PATH
+
 _DEFAULT_FALLBACK_ORDER = ["groq", "gemini", "mistral"]
 
 MODELS: dict[str, str] = {

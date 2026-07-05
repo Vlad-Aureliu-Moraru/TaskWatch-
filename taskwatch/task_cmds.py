@@ -325,7 +325,10 @@ def reset_overdue_repeatables() -> int:
             count += 1
 
     rows = conn.execute(
-        "SELECT * FROM tasks WHERE repeatable = 1 AND finished = 0 AND has_to_be_completed_to_repeat = 0 AND deadline != 'none' AND deadline <= ?",
+        (
+            "SELECT * FROM tasks WHERE repeatable = 1 AND finished = 0 AND "
+            "has_to_be_completed_to_repeat = 0 AND deadline != 'none' AND deadline <= ?"
+        ),
         (today,),
     ).fetchall()
     for r in rows:

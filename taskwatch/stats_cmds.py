@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+
 from .db import get_conn
 
 
@@ -44,7 +45,6 @@ def compute_stats() -> dict:
         ud_grid[r["urgency"] - 1][r["difficulty"] - 1] = r["c"]
 
     # Deadline timeline (pending tasks only)
-    sunday = monday  # monday is already ISO string of this week's monday
     sunday_dt = today - timedelta(days=today.weekday()) + timedelta(days=6)
     next_sunday_dt = sunday_dt + timedelta(days=7)
     sunday_str = sunday_dt.isoformat()

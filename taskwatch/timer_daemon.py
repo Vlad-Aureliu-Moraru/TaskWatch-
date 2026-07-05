@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Standalone timer daemon — survives TUI closure."""
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -8,11 +9,19 @@ import sys
 import time
 from pathlib import Path
 
-INACTIVE_DATA = {"text": "", "class": "inactive"}
+logger = logging.getLogger("taskwatch.timer_daemon")
 
-STATE_PATH = Path.home() / ".local" / "share" / "taskwatch" / "timer_state.json"
+try:
+    from .paths import INACTIVE_TIMER_DATA as INACTIVE_DATA
+    from .paths import TIMER_FILE_PATH
+    from .paths import TIMER_STATE_PATH as STATE_PATH
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from taskwatch.paths import INACTIVE_TIMER_DATA as INACTIVE_DATA
+    from taskwatch.paths import TIMER_FILE_PATH
+    from taskwatch.paths import TIMER_STATE_PATH as STATE_PATH
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-TIMER_FILE_PATH = Path.home() / ".local" / "share" / "taskwatch" / "timer.json"
 
 
 def _atomic_write(data):
@@ -49,8 +58,8 @@ def _write_timer_file(remaining: int, segment_idx: int, paused: bool, mode: str)
                 "class": f"timer-{phase.lower()}",
                 "tooltip": f"Timer: {phase} ({time_str} remaining)",
             }, f)
-    except OSError:
-        pass
+    except OSError as e:
+        logger.warning("Failed to write timer file: %s", e)
 
 
 def _clear_timer_file():
@@ -58,8 +67,8 @@ def _clear_timer_file():
         TIMER_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(TIMER_FILE_PATH, "w") as f:
             json.dump(INACTIVE_DATA, f)
-    except OSError:
-        pass
+    except OSError as e:
+        logger.warning("Failed to clear timer file: %s", e)
 
 
 def _notify(label):
@@ -69,7 +78,7 @@ def _notify(label):
             capture_output=True,
         )
     except FileNotFoundError:
-        pass
+        logger.debug("notify-send not available, skipping notification")
 
 
 def _mark_done(task_id: int):
@@ -77,8 +86,8 @@ def _mark_done(task_id: int):
         sys.path.insert(0, str(PROJECT_ROOT))
         from taskwatch import task_cmds  # noqa: PLC0415
         task_cmds.mark_done(task_id)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.exception("Failed to mark task %s done: %s", task_id, e)
 
 
 def run_simple(total_seconds: int, minutes: int, state):

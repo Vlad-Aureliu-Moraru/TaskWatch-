@@ -1,11 +1,10 @@
 import re
-from pathlib import Path
 from datetime import datetime
+
 from . import task_cmds
 from .models import Task
+from .paths import APTS_FILE, CALCURSE_DIR
 
-CALCURSE_DIR = Path.home() / ".local" / "share" / "calcurse"
-APTS_FILE = CALCURSE_DIR / "apts"
 TW_TAG = "[TW]"
 TW_RE = re.compile(r"^\d{2}/\d{2}/\d{4}.*\|" + re.escape(TW_TAG))
 
@@ -46,7 +45,7 @@ def sync_to_calcurse() -> int:
             new_lines.append(line)
 
     existing = read_apts()
-    existing = [l for l in existing if not TW_RE.match(l)]
+    existing = [line for line in existing if not TW_RE.match(line)]
 
     all_lines = existing + new_lines
 

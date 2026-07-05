@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import datetime
-import queue
+import sys
 import threading
 
 import urwid
@@ -173,8 +173,9 @@ class AIChatWidget(WidgetWrap):
                 if provider:
                     response += "\n\n\u2014 TaskWatcher"
                 app._ai_inbox.put(lambda: chat_self._on_ai_result(response, actions))
-            except Exception as e:
-                app._ai_inbox.put(lambda: chat_self._on_ai_error(str(e)))
+            except Exception:
+                err = sys.exc_info()[1]
+                app._ai_inbox.put(lambda: chat_self._on_ai_error(str(err)))
 
         t = threading.Thread(target=worker, daemon=True)
         t.start()

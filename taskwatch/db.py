@@ -1,9 +1,7 @@
 import sqlite3
 from datetime import datetime
-from pathlib import Path
 
-DATA_DIR = Path.home() / ".local" / "share" / "taskwatch"
-DB_PATH = DATA_DIR / "taskwatch.db"
+from .paths import DATA_DIR, DB_PATH
 
 _connection: sqlite3.Connection | None = None
 
@@ -43,7 +41,9 @@ CREATE TABLE IF NOT EXISTS notes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     date TEXT NOT NULL,
-    note TEXT NOT NULL
+    note TEXT NOT NULL,
+    file_path TEXT,
+    created_at TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS tags (
@@ -77,7 +77,22 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE tasks ADD COLUMN position INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass
+    _migrate_notes(conn)
     _migrate_dates(conn)
+
+
+def _migrate_notes(conn: sqlite3.Connection) -> None:
+    for col in ("file_path", "created_at"):
+        try:
+            conn.execute(f"ALTER TABLE notes ADD COLUMN {col} TEXT")
+        except sqlite3.OperationalError:
+            pass
+    now = datetime.now().isoformat()
+    conn.execute(
+        "UPDATE notes SET created_at = ? WHERE created_at IS NULL OR created_at = ''",
+        (now,),
+    )
+    conn.commit()
 
 
 def _migrate_dates(conn: sqlite3.Connection) -> None:

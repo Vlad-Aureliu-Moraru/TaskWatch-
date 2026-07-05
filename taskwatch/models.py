@@ -39,6 +39,8 @@ class Note:
     task_id: int
     date: str
     note: str
+    file_path: str | None = None
+    created_at: str = ""
 
 
 @dataclass

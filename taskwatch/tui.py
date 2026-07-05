@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -19,18 +21,34 @@ from urwid import (
     AttrMap,
     Columns,
     Edit,
-    ExitMainLoop,
     Frame,
     LineBox,
     ListBox,
-    MainLoop,
     Overlay,
+    Pile,
     SimpleFocusListWalker,
     Text,
     WidgetWrap,
 )
 
-from . import ai_client, ai_chat, archive_cmds, calcurse_cmds, db as db_mod, directory_cmds, io_cmds, note_cmds, stats_cmds, tag_cmds, task_cmds, timer as timer_mod, undo_cmds
+from . import (
+    ai_chat,
+    ai_client,
+    archive_cmds,
+    calcurse_cmds,
+    directory_cmds,
+    io_cmds,
+    note_cmds,
+    stats_cmds,
+    tag_cmds,
+    task_cmds,
+    undo_cmds,
+)
+from . import db as db_mod
+from . import timer as timer_mod
+from .paths import DATA_DIR, TIMER_STATE_PATH
+
+logger = logging.getLogger("taskwatch.tui")
 
 
 class Level(Enum):
@@ -90,7 +108,7 @@ _HIGHLIGHT_ALIASES: dict[str, str] = {
 }
 
 COMMANDS = [
-    "a", "add", "r", "remove", "d", "e", "edit", "f", "finish",
+    "a", "add", "at", "r", "remove", "d", "e", "edit", "f", "finish",
     "c", "cancel", "shf", "showFinished", "hf", "hideFinished",
     "h", "help", "q", "exit", "stats", "ftc", "undo", "week",
     "st", "ts", "timerStop", "pt", "pauseTimer", "rt", "resetTimer",
@@ -111,6 +129,7 @@ HELP_TEXT = (
     "  :           Focus command bar\n\n"
     "Commands (type : then the key):\n"
     "  :a | :add             Add item at current level\n"
+    "  :at                   Add note with file attachment (Notes level only)\n"
     "  :r | :remove          Delete selected item (with confirmation)\n"
     "  :e | :edit            Edit selected item\n"
     "  :c | :cancel          Cancel command / wizard\n"
@@ -215,11 +234,11 @@ def _copy_to_clipboard(text: str) -> bool:
     return False
 
 
-import math as _math
-import struct as _struct
-import wave as _wave
+import math as _math  # noqa: E402
+import struct as _struct  # noqa: E402
+import wave as _wave  # noqa: E402
 
-_SOUND_DIR = Path.home() / ".local" / "share" / "taskwatch" / "sounds"
+_SOUND_DIR = DATA_DIR / "sounds"
 
 def _generate_wav(path: Path, freq: float, duration: float, decay: float = 8) -> None:
     sample_rate = 44100
@@ -251,7 +270,6 @@ def _ensure_default_sounds() -> dict[str, Path]:
 
 def _generate_multi_tone_wav(path: Path, tones: list[tuple[float, float]], decay: float = 10) -> None:
     sample_rate = 44100
-    num_samples = sum(int(sample_rate * d) for _, d in tones)
     path.parent.mkdir(parents=True, exist_ok=True)
     with _wave.open(str(path), "w") as w:
         w.setnchannels(1)
@@ -306,6 +324,73 @@ def _pct_bar(pct: int, width: int) -> list:
     if empty > 0:
         parts.append(("bar_e", "\u2591" * empty))
     return parts
+
+
+_HBLOCK_STEPS = " \u258f\u258e\u258d\u258c\u258b\u258a\u2589\u2588"
+_BRAILLE_STEPS = "\u2800\u2840\u28c0\u28c4\u28e4\u28e6\u28f6\u28f7\u28ff"
+_VBLOCK_STEPS = " \u2581\u2582\u2583\u2584\u2585\u2586\u2587"
+
+
+def _gradient_attr(pct: int) -> str:
+    if pct >= 80:
+        return "c1"
+    if pct >= 60:
+        return "c2"
+    if pct >= 40:
+        return "c3"
+    if pct >= 20:
+        return "c4"
+    return "c5"
+
+
+def _hblock_bar(pct: int, width: int, empty_char: str = "\u2591") -> list:
+    fa = _gradient_attr(pct)
+    total = width * 8
+    filled = int(total * pct / 100)
+    full = filled // 8
+    rem = filled % 8
+    empty = width - full - (1 if rem else 0)
+    parts: list = [(fa, "\u2588" * full)]
+    if rem:
+        parts.append((fa, _HBLOCK_STEPS[rem]))
+    if empty > 0:
+        parts.append(("bar_e", empty_char * empty))
+    return parts
+
+
+def _braille_bar(pct: int, width: int, fill_attr: str) -> list:
+    total = width * 8
+    filled = int(total * pct / 100)
+    full = filled // 8
+    rem = filled % 8
+    empty = width - full - (1 if rem else 0)
+    parts: list = [(fill_attr, _BRAILLE_STEPS[8] * full)]
+    if rem:
+        parts.append((fill_attr, _BRAILLE_STEPS[rem]))
+    if empty > 0:
+        parts.append((fill_attr, _BRAILLE_STEPS[0] * empty))
+    return parts
+
+
+def _vblock_bar(pct: int, width: int, empty_char: str = "\u2581") -> list:
+    fa = _gradient_attr(pct)
+    total = width * 8
+    filled = int(total * pct / 100)
+    full = filled // 8
+    rem = filled % 8
+    empty = width - full - (1 if rem else 0)
+    parts: list = [(fa, "\u2588" * full)]
+    if rem:
+        parts.append((fa, _VBLOCK_STEPS[rem]))
+    if empty > 0:
+        parts.append(("bar_e", empty_char * empty))
+    return parts
+
+
+def _solid_bar(pct: int, width: int) -> list:
+    fa = _gradient_attr(pct)
+    filled = int(width * pct / 100)
+    return [(fa, "\u2588" * filled + "\u2591" * (width - filled))]
 
 
 def _dur(secs: int) -> str:
@@ -681,7 +766,7 @@ class TaskWatchTUI:
         except OSError:
             pass
 
-        self._timer_state_path = Path.home() / ".local" / "share" / "taskwatch" / "timer_state.json"
+        self._timer_state_path = TIMER_STATE_PATH
         self._daemon_path = Path(__file__).resolve().parent / "timer_daemon.py"
 
         self._frame = MainFrame(self)
@@ -706,8 +791,8 @@ class TaskWatchTUI:
         if self._caption_alarm_handle is not None:
             try:
                 self._loop.remove_alarm(self._caption_alarm_handle)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to remove caption alarm: %s", e)
         self._cmd.set_caption((attr, text))
         self._caption_alarm_handle = self._loop.set_alarm_in(
             duration,
@@ -877,8 +962,17 @@ class TaskWatchTUI:
                 items = [x for x in items if self._filter_text.lower() in x.note.lower()]
             self._current_items = items
             for n in items:
-                first_line = n.note.split("\n")[0][:60]
-                label = f"\U000f039a {n.id}: {first_line}"
+                ts = n.created_at or n.date
+                if ts:
+                    try:
+                        dt = datetime.fromisoformat(ts)
+                        ts_display = dt.strftime("%d/%m/%Y %H:%M")
+                    except (ValueError, TypeError):
+                        ts_display = ts[:16]
+                else:
+                    ts_display = n.date
+                clip = "\U0001f4ce " if n.file_path else ""
+                label = f"\U000f039a {n.id}: {clip}{ts_display}"
                 w = AttrMap(SelectableText(label), "default", "focus")
                 self._list_walker.append(w)
 
@@ -923,7 +1017,30 @@ class TaskWatchTUI:
 
         elif self._level == Level.NOTES:
             n = self._current_items[idx]
-            self._set_detail(n.note)
+            lines: list[str | list] = []
+            if n.note:
+                for line in n.note.split("\n"):
+                    lines.append(line)
+            if n.file_path:
+                fp = os.path.abspath(n.file_path)
+                if os.path.isfile(fp):
+                    lines.append([("dim", f"\n{'─'*40}")])
+                    lines.append([("c1", f"  {fp}")])
+                    lines.append([("dim", f"{'─'*40}")])
+                    try:
+                        with open(fp, "r", encoding="utf-8", errors="replace") as fh:
+                            file_lines = fh.readlines()
+                        max_lines = 300
+                        for i, fl in enumerate(file_lines):
+                            if i >= max_lines:
+                                lines.append([("dim", f"  ... ({len(file_lines) - max_lines} more lines)")])
+                                break
+                            lines.append(fl.rstrip("\n"))
+                    except OSError:
+                        lines.append([("error", "  (error reading file)")])
+                else:
+                    lines.append([("error", f"\n  File not found: {fp}")])
+            self._set_detail(*lines)
 
     def _show_task_detail(self, task) -> None:
         s = timer_mod.compute_schedule(task)
@@ -1101,6 +1218,9 @@ class TaskWatchTUI:
             return
         if cmd in ("a", "add"):
             self._cmd_add()
+            return
+        if cmd == "at":
+            self._cmd_add_with_file()
             return
         if cmd in ("r", "remove", "d"):
             self._cmd_remove()
@@ -1708,6 +1828,45 @@ class TaskWatchTUI:
         note_cmds.create_note(self._selected_task_id, today, content)
         self._end_wizard()
 
+    def _cmd_add_with_file(self) -> None:
+        if self._level != Level.NOTES or self._selected_task_id is None:
+            return
+        self._wiz_file_note_content = ""
+        self._start_wizard(
+            "Note content (leave empty for date-only): ",
+            self._wiz_note_content_with_file,
+        )
+
+    def _wiz_note_content_with_file(self, content: str) -> None:
+        self._wiz_file_note_content = content
+        self._show_file_picker(
+            callback=self._on_file_picked,
+            on_cancel=self._on_file_picker_cancel,
+        )
+
+    def _on_file_picked(self, file_path: str) -> None:
+        self._loop.widget = self._frame
+        today = date.today().strftime("%d/%m/%Y")
+        note_cmds.create_note(
+            self._selected_task_id,
+            today,
+            self._wiz_file_note_content,
+            file_path=file_path,
+        )
+        self._wiz_file_note_content = ""
+        self._end_wizard()
+
+    def _on_file_picker_cancel(self) -> None:
+        self._loop.widget = self._frame
+        today = date.today().strftime("%d/%m/%Y")
+        note_cmds.create_note(
+            self._selected_task_id,
+            today,
+            self._wiz_file_note_content,
+        )
+        self._wiz_file_note_content = ""
+        self._end_wizard()
+
     def _wiz_edit_note(self, note_id: int, content: str) -> None:
         if not content:
             self._end_wizard()
@@ -1740,7 +1899,7 @@ class TaskWatchTUI:
             if task_data is not None:
                 conn = db_mod.get_conn()
                 notes = conn.execute(
-                    "SELECT id, task_id, date, note FROM notes WHERE task_id = ?",
+                    "SELECT id, task_id, date, note, file_path, created_at FROM notes WHERE task_id = ?",
                     (sid,),
                 ).fetchall()
                 task_data["notes"] = [dict(n) for n in notes]
@@ -1758,7 +1917,7 @@ class TaskWatchTUI:
             if tids:
                 placeholders = ",".join("?" for _ in tids)
                 for row in conn.execute(
-                    f"SELECT id, task_id, date, note FROM notes WHERE task_id IN ({placeholders})",
+                    f"SELECT id, task_id, date, note, file_path, created_at FROM notes WHERE task_id IN ({placeholders})",
                     tids,
                 ):
                     all_notes.setdefault(row["task_id"], []).append(dict(row))
@@ -2078,108 +2237,111 @@ class TaskWatchTUI:
         s = stats_cmds.compute_stats()
 
         term_width = shutil.get_terminal_size().columns
-        bar_width = max(10, min(25, int(term_width * 0.22)))
-        total_h, total_m = divmod(s["total_time"], 60)
+        bar_width = max(12, min(26, int(term_width * 0.24)))
+        th, tm = divmod(s["total_time"], 60)
 
         walker: list[Text] = []
 
         def add(text: str | list) -> None:
             walker.append(Text(text))
 
-        def add_header(title: str) -> None:
-            add("")
-            add([("head", f"  \u2500\u2500 {title} \u2500\u2500")])
+        def section(title: str) -> None:
+            add([("head", f"  \u25b8 {title}")])
 
-        # ── Title ──
-        add([("head", "\n  \u2694  TaskWatch+ Stats  \u2694")])
-        add("")
-
-        # ── Summary ──
-        add_header("Summary")
-        tl = s["total"]
-        fl = s["finished"]
-        add(f"    Tasks:     {tl:>4}  Finished: {fl}/{tl}  ({s['completion_pct']}%)")
-        total_h1, total_m1 = divmod(s["total_time"], 60)
-        add(f"    Time:      {total_h1}h {total_m1:02d}m  Tags: {s['total_tags']}")
-        add(f"    Pending:   {s['pending']}")
-
-        # ── Completion bar ──
-        add_header("Completion")
-        bar_parts: list = [("head", "  ")]
-        bar_parts.extend(_pct_bar(s["completion_pct"], bar_width))
-        bar_parts.append(f"  {s['completion_pct']:>3}%")
-        add(bar_parts)
-
-        # ── Status ──
-        add_header("Status")
+        # ── Title + compact summary ──
+        add([("head", "  \u2694  TaskWatch+ Stats")])
         add([
-            "    ",
-            ("head", "\u26a0 Overdue:"), f"  {s['overdue']:>3}",
-            ("head", "     \u2713 Today:"), f"  {s['today_completed']:>3}",
-            ("head", "     \u2713 Week:"), f"  {s['completed_this_week']:>3}",
+            ("dim", "  Tasks "), str(s["total"]),
+            ("dim", "  Done "), f"{s['finished']}/{s['total']}",
+            ("dim", "  Pending "), str(s["pending"]),
+            ("dim", "  Time "), f"{th}h{tm:02d}m",
+            ("dim", "  Tags "), str(s["total_tags"]),
         ])
 
-        # ── Deadline timeline ──
+        # ── Completion (smooth horizontal-block bar, gradient colour) ──
+        add([("head", "  \u25b8 Completion  "),
+             *_hblock_bar(s["completion_pct"], bar_width),
+             f"  {s['completion_pct']:>3}%"])
+
+        # ── Status (inline, semantic colours) ──
+        add([
+            ("head", "  \u25b8 Status    "),
+            ("error", f"\u26a0 {s['overdue']:>2}"),
+            ("dim", "  "),
+            ("warn", f"\u2713 today {s['today_completed']:>2}"),
+            ("dim", "  "),
+            ("done", f"\u2713 week {s['completed_this_week']:>2}"),
+        ])
+
+        # ── Deadline timeline (braille bars, semantic colours) ──
         tl_map = s["deadline_timeline"]
-        timeline_labels = [
+        timeline = [
             ("\u26a0 Overdue", tl_map["overdue"], "error"),
             ("\u2713 Due today", tl_map["due_today"], "warn"),
-            ("\u25b6 This week", tl_map["this_week"], "default"),
-            ("\u25b7 Next week", tl_map["next_week"], "default"),
+            ("\u25b6 This week", tl_map["this_week"], "c2"),
+            ("\u25b7 Next week", tl_map["next_week"], "c1"),
             ("\u2026 Later", tl_map["later"], "dim"),
             ("\u2014 No deadline", tl_map["no_deadline"], "dim"),
         ]
-        max_tl = max((c for _, c, _ in timeline_labels), default=1)
-        add_header("Deadline Timeline")
-        for label, count, attr in timeline_labels:
-            tl_bar_w = bar_width - 2
-            tl_filled = int(tl_bar_w * count / max_tl) if max_tl else 0
+        max_tl = max((c for _, c, _ in timeline), default=1)
+        section("Deadline Timeline")
+        for label, count, attr in timeline:
+            pct_tl = int(count / max_tl * 100) if max_tl else 0
             add([
-                f"    {label:<16}", " ",
-                (attr, "\u2588" * tl_filled + "\u2591" * (tl_bar_w - tl_filled)),
+                f"    {label:<15} ",
+                *_braille_bar(pct_tl, bar_width, attr),
                 f"  {count:>3}",
             ])
 
         # ── Urgency × Difficulty heatmap ──
         grid = s["ud_grid"]
-        add_header("Urgency × Difficulty (pending)")
-        add("         D1  D2  D3  D4  D5")
+        max_cell = max((max(r) for r in grid), default=1)
+        section("Urgency \u00d7 Difficulty (pending)")
+        add("         D1   D2   D3   D4   D5")
         for u_idx, row in enumerate(grid):
-            cells: list = [f"    U{u_idx + 1}:  "]
+            cells: list = [f"    U{u_idx + 1}  "]
             for c in row:
-                attr = "error" if c >= 5 else ("warn" if c >= 3 else "dim")
-                cells.append((attr, f" {c:>2} "))
+                if c == 0:
+                    cells.append(("dim", f"{_BRAILLE_STEPS[0]}{c:>2} "))
+                else:
+                    intensity = c / max_cell
+                    if intensity >= 0.8:
+                        attr = "c5"
+                    elif intensity >= 0.6:
+                        attr = "c4"
+                    elif intensity >= 0.4:
+                        attr = "c3"
+                    elif intensity >= 0.2:
+                        attr = "c2"
+                    else:
+                        attr = "c1"
+                    bstep = _BRAILLE_STEPS[int(round(intensity * 8))]
+                    cells.append((attr, f"{bstep}{c:>2} "))
             add(cells)
 
-        # ── Archive stats ──
+        # ── Archive stats (bottom-up vertical-block bars, gradient) ──
         arch_stats = s["archive_stats"]
         if arch_stats:
-            add_header("Archives")
+            section("Archives")
             for a in arch_stats:
-                name = a["name"]
-                arch_bar_w = bar_width - 2
-                filled = int(arch_bar_w * a["pct"] / 100)
-                ah, am = divmod(a["time_budget"], 60)
+                name = a["name"][:14]
+                ah, _ = divmod(a["time_budget"], 60)
                 add([
                     f"    {name:<14} ",
-                    ("done" if a["pct"] >= 80 else "warn" if a["pct"] >= 50 else "error",
-                     "\u2588" * filled + "\u2591" * (arch_bar_w - filled)),
+                    *_vblock_bar(a["pct"], bar_width),
                     f"  {a['pct']:>3}%  {a['done']}/{a['total']}",
                     ("dim", f"  {ah}h"),
                 ])
 
-        # ── Directory stats ──
+        # ── Directory stats (solid bars, 5-step gradient) ──
         dirs = stats_cmds.all_directory_stats()
         if dirs:
-            add_header("Directories (top)")
+            section("Directories (top)")
             for d in dirs[:10]:
                 name = d["name"][:18]
-                dir_bar_w = bar_width - 2
-                filled = int(dir_bar_w * d["pct"] / 100)
                 add([
                     f"    {name:<18} ",
-                    ("done" if d["pct"] >= 80 else "warn" if d["pct"] >= 50 else "error",
-                     "\u2588" * filled + "\u2591" * (dir_bar_w - filled)),
+                    *_solid_bar(d["pct"], bar_width),
                     f"  {d['pct']:>3}%  {d['done']}/{d['total']}",
                 ])
             if len(dirs) > 10:
@@ -2223,8 +2385,8 @@ class TaskWatchTUI:
         self._loop.widget = self._stats_overlay
 
     def _show_week_view(self) -> None:
-        from datetime import timedelta
         import shutil
+        from datetime import timedelta
 
         today = date.today()
         monday = today - timedelta(days=today.weekday())
@@ -2390,7 +2552,7 @@ class TaskWatchTUI:
             "directory": row["dir_name"] if row else None,
             "archive": row["arch_name"] if row else None,
             "notes": [
-                {"id": n.id, "date": n.date, "note": n.note}
+                {"id": n.id, "date": n.date, "note": n.note, "file_path": n.file_path, "created_at": n.created_at}
                 for n in notes
             ],
             "tags": [t.name for t in tags],
@@ -2403,7 +2565,7 @@ class TaskWatchTUI:
                 self._set_timed_caption("error", "Nothing selected ")
                 return
             n = self._current_items[idx]
-            data = {"id": n.id, "date": n.date, "note": n.note}
+            data = {"id": n.id, "date": n.date, "note": n.note, "file_path": n.file_path, "created_at": n.created_at}
 
         elif self._level == Level.TASKS:
             if self._bulk_selection:
@@ -2518,7 +2680,7 @@ class TaskWatchTUI:
             },
             "directory": dir_name,
             "archive": arch_name,
-            "notes": [{"date": n.date, "note": n.note} for n in notes],
+            "notes": [{"date": n.date, "note": n.note, "file_path": n.file_path, "created_at": n.created_at} for n in notes],
         }
 
     def _cmd_ai(self) -> None:
@@ -2573,6 +2735,26 @@ class TaskWatchTUI:
                 self._ai_inbox.get_nowait()
             except queue.Empty:
                 break
+
+    def _show_file_picker(
+        self,
+        callback: Callable[[str], None],
+        on_cancel: Callable[[], None] | None = None,
+        start_dir: str | None = None,
+    ) -> None:
+        if start_dir is None:
+            start_dir = os.getcwd()
+        picker = FilePickerWidget(
+            start_dir=start_dir,
+            on_select=callback,
+            on_cancel=on_cancel or (lambda: self._focus_body()),
+        )
+        overlay = Overlay(
+            picker, self._frame,
+            align="center", width=("relative", 70),
+            valign="middle", height=("relative", 70),
+        )
+        self._loop.widget = overlay
 
     def _handle_aii_subcmd(self, rest: str) -> None:
         parts = rest.split()
@@ -2745,24 +2927,28 @@ class TaskWatchTUI:
         bar_parts = []
         for i, (seg, w) in enumerate(zip(segments, seg_widths)):
             if i == 0:
-                char = "░"
                 base_attr = "dim"
             elif i % 2 == 1:
-                char = "▓"
                 base_attr = "head"
             else:
-                char = "▒"
                 base_attr = "default"
             if i < current_idx:
-                bar_parts.append((base_attr, char * w))
+                bar_parts.append((base_attr, _BRAILLE_STEPS[8] * w))
             elif i == current_idx:
-                filled = int(w * current_elapsed / seg) if seg else 0
-                if filled:
-                    bar_parts.append((base_attr, char * filled))
-                if w - filled > 0:
-                    bar_parts.append(("bar_e", char * (w - filled)))
+                ratio = current_elapsed / seg if seg else 0
+                total_cells = w * 8
+                filled_cells = int(total_cells * ratio)
+                full = filled_cells // 8
+                rem = filled_cells % 8
+                empty = w - full - (1 if rem else 0)
+                if full:
+                    bar_parts.append((base_attr, _BRAILLE_STEPS[8] * full))
+                if rem:
+                    bar_parts.append((base_attr, _BRAILLE_STEPS[rem]))
+                if empty:
+                    bar_parts.append(("bar_e", _BRAILLE_STEPS[0] * empty))
             else:
-                bar_parts.append(("bar_e", char * w))
+                bar_parts.append(("bar_e", _BRAILLE_STEPS[0] * w))
 
         marker_pos = sum(seg_widths[:current_idx]) + seg_widths[current_idx] // 2
         marker_line = "  " + " " * marker_pos + "▲"
@@ -2822,8 +3008,8 @@ class TaskWatchTUI:
                     conn = db_mod.get_conn()
                     try:
                         conn.execute(
-                            "INSERT INTO notes (id, task_id, date, note) VALUES (?, ?, ?, ?)",
-                            (note_data["id"], note_data["task_id"], note_data["date"], note_data["note"]),
+                            "INSERT INTO notes (id, task_id, date, note, file_path, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                            (note_data["id"], note_data["task_id"], note_data["date"], note_data["note"], note_data.get("file_path"), note_data.get("created_at", "")),
                         )
                         conn.commit()
                     except Exception:
@@ -3042,8 +3228,8 @@ class TaskWatchTUI:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-        except (OSError, ValueError):
-            pass
+        except (OSError, ValueError) as e:
+            logger.warning("Failed to spawn timer daemon: %s", e)
 
     def _reconnect_timer(self) -> None:
         try:
@@ -3364,6 +3550,71 @@ class TaskWatchTUI:
         self._loop.set_alarm_in(1, self._tick)
         self._frame.focus_position = "body"
         self._loop.run()
+
+
+class FilePickerWidget(WidgetWrap):
+    def __init__(
+        self,
+        start_dir: str,
+        on_select: Callable[[str], None],
+        on_cancel: Callable[[], None] | None = None,
+    ) -> None:
+        self._start_dir = start_dir
+        self._on_select = on_select
+        self._on_cancel = on_cancel or (lambda: None)
+        self._current_dir = os.path.abspath(start_dir)
+        self._walker = SimpleFocusListWalker([])
+        self._listbox = ListBox(self._walker)
+        self._header_text = Text("")
+        self._pile = Pile([
+            ("pack", AttrMap(self._header_text, "head")),
+            ("weight", 1, LineBox(self._listbox)),
+        ])
+        super().__init__(self._pile)
+        self._refresh()
+
+    def _refresh(self) -> None:
+        self._walker.clear()
+        self._header_text.set_text(f"  {self._current_dir}")
+        entries: list[tuple[str, str]] = []
+        if self._current_dir != "/":
+            entries.append(("..", "dir"))
+        try:
+            names = sorted(os.listdir(self._current_dir))
+        except PermissionError:
+            names = []
+        for name in names:
+            full = os.path.join(self._current_dir, name)
+            kind = "dir" if os.path.isdir(full) else "file"
+            entries.append((name, kind))
+        for name, kind in entries:
+            label = f"\U0001f4c1 {name}" if kind == "dir" else f"\U0001f4c4 {name}"
+            w = AttrMap(SelectableText(label), "default", "focus")
+            self._walker.append(w)
+
+    def keypress(self, size: tuple[int, int], key: str) -> str | None:
+        if key in ("esc", "q"):
+            self._on_cancel()
+            return None
+        if key in ("enter", " "):
+            idx = self._listbox.focus_position
+            if idx < len(self._walker):
+                label = self._walker[idx].original_widget.text
+                name = label.split(" ", 1)[1] if " " in label else label
+                full = os.path.join(self._current_dir, name)
+                if os.path.isdir(full):
+                    self._current_dir = full
+                    self._refresh()
+                else:
+                    self._on_select(full)
+            return None
+        if key in ("h", "backspace"):
+            parent = os.path.dirname(self._current_dir)
+            if os.path.isdir(parent):
+                self._current_dir = parent
+                self._refresh()
+            return None
+        return super().keypress(size, key)
 
 
 def run_tui() -> None:

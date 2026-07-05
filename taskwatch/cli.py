@@ -1,15 +1,20 @@
 import argparse
 import json
-import os
 import sys
-from pathlib import Path
-from . import ai_client, archive_cmds, directory_cmds, io_cmds, note_cmds, tag_cmds, task_cmds, timer
-from .db import close
 
-DATA_DIR = Path.home() / ".local" / "share" / "taskwatch"
-TIMER_FILE_PATH = DATA_DIR / "timer.json"
-TIMER_STATE_PATH = DATA_DIR / "timer_state.json"
-INACTIVE_DATA = {"text": "", "class": "inactive"}
+from . import (
+    ai_client,
+    archive_cmds,
+    directory_cmds,
+    io_cmds,
+    note_cmds,
+    tag_cmds,
+    task_cmds,
+    timer,
+)
+from .db import close
+from .paths import DATA_DIR, TIMER_FILE_PATH, TIMER_STATE_PATH
+from .paths import INACTIVE_TIMER_DATA as INACTIVE_DATA
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -565,7 +570,8 @@ def _ai_suggest() -> None:
     )
     messages = [
         {"role": "system", "content": _SYSTEM_PROMPT + "\n\n" + context},
-        {"role": "user", "content": "What should I work on next? Consider urgency, deadlines, difficulty, and current progress."},
+        {"role": "user",
+         "content": "What should I work on next? Consider urgency, deadlines, difficulty, and current progress."},
     ]
 
     response, provider, actions = ai_client.chat(messages)
@@ -583,7 +589,8 @@ def _handle_cli_actions(actions: list[dict]) -> None:
         label = a.get("type", "UNKNOWN").replace("_", " ").title()
         params = ", ".join(f"{k}={v}" for k, v in a.items() if k != "type")
         print(f"  {i}. {label}: {params}")
-    print("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
+    print("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+          "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
 
     try:
         confirm = input("  Confirm? [Y/n]: ").strip().lower()

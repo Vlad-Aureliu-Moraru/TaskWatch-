@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+
 from .db import get_conn
 
 ALLOWED_TABLES = frozenset({"archives", "directories", "tasks", "notes", "tags", "task_tags"})
@@ -13,7 +14,7 @@ ALLOWED_COLUMNS = {
         "finished", "finished_date", "has_to_be_completed_to_repeat",
         "repeat_on_specific_day", "position",
     }),
-    "notes": frozenset({"id", "task_id", "date", "note"}),
+    "notes": frozenset({"id", "task_id", "date", "note", "file_path", "created_at"}),
     "tags": frozenset({"id", "name"}),
     "task_tags": frozenset({"task_id", "tag_id"}),
 }
@@ -68,4 +69,4 @@ def import_data(path: str) -> str:
         return f"Imported {total} records"
     except Exception:
         conn.rollback()
-        return f"Import failed"
+        return "Import failed"

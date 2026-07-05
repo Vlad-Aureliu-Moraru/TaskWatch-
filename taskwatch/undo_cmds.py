@@ -1,5 +1,4 @@
 from .db import get_conn
-from .models import Task
 
 _undo_stack: list[dict] = []
 _MAX_UNDO = 50
