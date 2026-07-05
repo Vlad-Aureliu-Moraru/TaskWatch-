@@ -508,6 +508,15 @@ def get_overdue_tasks() -> list[Task]:
     return [_row_to_task(r) for r in rows]
 
 
+def get_tasks_due_on(date_str: str) -> list[Task]:
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM tasks WHERE finished = 0 AND deadline = ?",
+        (date_str,),
+    ).fetchall()
+    return [_row_to_task(r) for r in rows]
+
+
 def search_tasks_global(query: str) -> list[dict]:
     conn = get_conn()
     pattern = f"%{query}%"
