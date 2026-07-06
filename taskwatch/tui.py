@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import json
 import logging
-import random
 import os
 import queue
+import random
+import re
 import shutil
 import signal
 import subprocess
-import threading
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Callable
 from datetime import date, datetime
@@ -35,6 +36,7 @@ from urwid import (
 )
 
 from . import (
+    __version__,
     ai_chat,
     ai_client,
     archive_cmds,
@@ -120,13 +122,14 @@ COMMANDS = [
     "st", "ts", "timerStop", "pt", "pauseTimer", "rt", "resetTimer",
     "su a", "su d", "sd a", "sd d", "sn a", "sn d", "sdl a", "sdl d", "sr",
     "tag ", "untag ", "ft ", "gs ", "qa ", "mv ", "mu", "md", "all",
-    "export", "import ", "importJSON ", "importJSONtaskTemplateCopy", "overdue", "schbar", "ai", "aii", "highlight",
+    "export", "import ",     "importJSON ", "importJSONtaskTemplateCopy", "importJSONnoteTemplateCopy", "overdue", "schbar", "ai", "aii", "highlight",
     "bm", "bd", "bt ", "bv ", "bc", "y", "sound", "sound on", "sound off",
     "sound work ", "sound break ", "sound done ",
     "pin", "unpin", "depends ", "undepends ",
     "subadd ", "subrm ", "subdone ", "subedit ",
     "snooze ", "dup", "standup", "select ",
     "preset ", "preset list", "preset add", "preset remove",
+    "update",
 ]
 
 CELEBRATION_MESSAGES = [
@@ -209,6 +212,7 @@ HELP_TEXT = (
     "Export/Import:\n"
     "  :export [path]        Export all data as JSON\n"
     "  :import <path>        Import data from JSON\n"
+    "  :update              Check for updates and update TaskWatch+\n"
     "  :y                   Copy selected item to clipboard as JSON\n"
     "                       (task: details+notes, dir: all tasks, archive: all dirs+tasks)\n"
     "                       (bulk-select tasks with Space first to copy all selected)\n\n"
@@ -702,7 +706,7 @@ class NoTabColumns(Columns):
 class MainFrame(Frame):
     def __init__(self, app: TaskWatchTUI):
         self._app = app
-        app._title_text = Text("TaskWatch+")
+        app._title_text = Text(f"TaskWatch+ v{__version__}")
         app._breadcrumb_text = Text("")
         app._clock_text = Text("")
         app._clock_w = AttrMap(app._clock_text, "dim")
@@ -1223,13 +1227,15 @@ class TaskWatchTUI:
                     lines.append([("dim", f"{'─'*40}")])
                     try:
                         with open(fp, "r", encoding="utf-8", errors="replace") as fh:
-                            file_lines = fh.readlines()
+                            content = fh.read()
+                        is_md = fp.lower().endswith((".md", ".markdown"))
+                        file_lines = _render_markdown_to_urwid(content) if is_md else [l.rstrip("\n") for l in content.split("\n")]
                         max_lines = 300
                         for i, fl in enumerate(file_lines):
                             if i >= max_lines:
-                                lines.append([("dim", f"  ... ({len(file_lines) - max_lines} more lines)")])
+                                lines.append([("dim", f"  ... ({len(file_lines) - max_lines} more items)")])
                                 break
-                            lines.append(fl.rstrip("\n"))
+                            lines.append(fl)
                     except OSError:
                         lines.append([("error", "  (error reading file)")])
                 else:
@@ -1769,12 +1775,25 @@ class TaskWatchTUI:
             self._refresh_list()
             return
         if cmd == "importJSON":
+            if self._level == Level.NOTES:
+                if self._selected_task_id is None:
+                    self._set_timed_caption("error", "No task selected ")
+                    return
+                self._show_import_notes_json_panel()
+                return
             if self._selected_directory_id is None:
                 self._set_timed_caption("error", "Select a directory first ")
                 return
             self._show_import_json_panel()
             return
         if cmd.startswith("importJSON "):
+            if self._level == Level.NOTES:
+                if self._selected_task_id is None:
+                    self._set_timed_caption("error", "No task selected ")
+                    return
+                path = cmd.split(" ", 1)[1].strip()
+                self._cmd_import_note_json_file(path)
+                return
             if self._selected_directory_id is None:
                 self._set_timed_caption("error", "Select a directory first ")
                 return
@@ -1783,6 +1802,9 @@ class TaskWatchTUI:
             return
         if cmd == "importJSONtaskTemplateCopy":
             self._cmd_import_json_template()
+            return
+        if cmd == "importJSONnoteTemplateCopy":
+            self._cmd_import_note_json_template()
             return
         if cmd == "bm":
             if self._level == Level.TASKS and self._bulk_selection:
@@ -1825,6 +1847,9 @@ class TaskWatchTUI:
 
         if cmd == "stats":
             self._show_stats()
+            return
+        if cmd == "update":
+            self._cmd_update()
             return
         if cmd == "undo":
             self._undo_last_action()
@@ -2681,7 +2706,24 @@ class TaskWatchTUI:
         self._cmd.set_edit_pos(len(completed))
 
     def _show_import_json_panel(self) -> None:
-        overlay = ImportJSONOverlay(self)
+        overlay = ImportJSONOverlay(self, title="Import Tasks JSON")
+        self._import_json_overlay = Overlay(
+            overlay,
+            self._frame,
+            align="center",
+            width=("relative", 80),
+            valign="middle",
+            height=("relative", 60),
+        )
+        self._loop.widget = self._import_json_overlay
+
+    def _show_import_notes_json_panel(self) -> None:
+        overlay = ImportJSONOverlay(
+            self,
+            import_fn=io_cmds.import_notes_json,
+            target_id=self._selected_task_id,
+            title="Import Notes JSON",
+        )
         self._import_json_overlay = Overlay(
             overlay,
             self._frame,
@@ -3327,6 +3369,43 @@ class TaskWatchTUI:
         target_dir = self._selected_directory_id
         self._run_async(
             lambda: io_cmds.import_tasks_from_directory_json(text, target_dir),
+            lambda r: self._finish_import(r),
+            "Importing...",
+        )
+
+    def _cmd_import_note_json_template(self) -> None:
+        template = json.dumps(
+            [
+                {
+                    "date": "2026-07-07",
+                    "note": "example note content",
+                    "file_path": None,
+                },
+                {
+                    "date": "2026-07-08",
+                    "note": "another note",
+                    "file_path": "/path/to/file.txt",
+                },
+            ],
+            indent=2,
+        )
+        self._run_async(
+            lambda: _copy_to_clipboard(template),
+            lambda r: self._finish_clipboard(r, "Import Notes JSON template copied to clipboard ", "Clipboard tools not found (wl-copy/xclip/xsel) "),
+            "Copying...",
+        )
+
+    def _cmd_import_note_json_file(self, path: str) -> None:
+        try:
+            text = open(path, "r", encoding="utf-8").read()
+        except OSError as e:
+            self._set_timed_caption("error", f"Cannot read file: {e} ")
+            return
+        if self._selected_task_id is None:
+            self._set_timed_caption("error", "No task selected ")
+            return
+        self._run_async(
+            lambda: io_cmds.import_notes_json(text, self._selected_task_id),
             lambda r: self._finish_import(r),
             "Importing...",
         )
@@ -4053,6 +4132,31 @@ class TaskWatchTUI:
         self._update_clock_display()
         self._write_timer_file()
 
+    def _cmd_update(self) -> None:
+        script = self._find_update_script()
+        if script is None:
+            self._set_timed_caption("error", "update.sh not found ")
+            return
+        terminal = self._get_terminal()
+        if terminal is None:
+            self._set_timed_caption("error", "No terminal found ")
+            return
+        cmd = _build_terminal_cmd(terminal, f"'{script}' ; echo; echo 'Press Enter to close...'; read")
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self._set_timed_caption("done", "Update started in new terminal... ")
+
+    @staticmethod
+    def _find_update_script() -> str | None:
+        candidates = [
+            Path(__file__).resolve().parent.parent / "update.sh",
+            Path.home() / ".local" / "bin" / "update.sh",
+            Path.home() / ".local" / "share" / "taskwatch" / "update.sh",
+        ]
+        for p in candidates:
+            if p.is_file():
+                return str(p)
+        return None
+
     def _cmd_sound_toggle(self) -> None:
         self._sound_enabled = not self._sound_enabled
         self._set_timed_caption(
@@ -4436,22 +4540,102 @@ def _build_highlighted_text(text: str, query: str) -> list:
     return result
 
 
+def _parse_inline_markdown(text: str, base_style: str = "default") -> list:
+    pattern = r'\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`|\[(.+?)\]\((.+?)\)'
+    parts: list = []
+    last_end = 0
+
+    for m in re.finditer(pattern, text):
+        start, end = m.start(), m.end()
+
+        if start > last_end:
+            parts.append((base_style, text[last_end:start]))
+
+        if m.group(1) is not None:
+            parts.append(("head", m.group(1)))
+        elif m.group(2) is not None:
+            parts.append((base_style, m.group(2)))
+        elif m.group(3) is not None:
+            parts.append(("special", m.group(3)))
+        elif m.group(4) is not None:
+            parts.append((base_style, f"{m.group(4)} ({m.group(5)})"))
+
+        last_end = end
+
+    if last_end < len(text):
+        parts.append((base_style, text[last_end:]))
+
+    return parts if parts else [(base_style, text)]
+
+
+def _render_markdown_to_urwid(text: str) -> list:
+    lines: list = []
+    in_code_block = False
+
+    for line in text.split("\n"):
+        stripped = line.strip()
+
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            continue
+
+        if in_code_block:
+            lines.append([("special", line)])
+            continue
+
+        if not stripped:
+            lines.append("")
+            continue
+
+        if re.match(r'^[-*_]{3,}\s*$', stripped):
+            lines.append([("dim", "  " + "\u2500" * 40)])
+            continue
+
+        h_match = re.match(r'^(#{1,6})\s+(.+)$', stripped)
+        if h_match:
+            lines.append(_parse_inline_markdown(h_match.group(2), "head"))
+            continue
+
+        if stripped.startswith("> "):
+            lines.append(_parse_inline_markdown(stripped[2:], "dim"))
+            continue
+
+        ul_match = re.match(r'^(\s*)[-*+]\s+(.+)$', line)
+        if ul_match:
+            indent = ul_match.group(1)
+            content = ul_match.group(2)
+            bullet = "  " + indent + "\u2022 "
+            lines.append(_parse_inline_markdown(bullet + content, "default"))
+            continue
+
+        ol_match = re.match(r'^(\s*)\d+\.\s+(.+)$', line)
+        if ol_match:
+            indent = ol_match.group(1)
+            content = ol_match.group(2)
+            lines.append(_parse_inline_markdown("  " + indent + content, "default"))
+            continue
+
+        lines.append(_parse_inline_markdown(line, "default"))
+
+    return lines
+
+
 class ImportJSONOverlay(WidgetWrap):
-    def __init__(self, app: "TaskWatchTUI"):
+    def __init__(self, app: "TaskWatchTUI", *, import_fn=None, target_id=None, title="Import JSON"):
         self._app = app
         self._importing = False
+        self._import_fn = import_fn
+        self._target_id = target_id
         self._edit = Edit("")
         self._edit.set_caption(("standout", "  "))
         self._result = Text("")
         clipboard = _paste_from_clipboard()
         if clipboard:
             self._edit.set_edit_text(clipboard)
-            title = "Import JSON"
             header = Text([("head", "  JSON loaded from clipboard — press "), ("special", "Ctrl+E"), ("head", " to import  |  "), ("special", "Esc"), ("head", " to cancel")])
             sample = clipboard.strip()[:80].replace("\n", " ")
             self._result.set_text([("default", f"  Loaded {len(clipboard)} chars: {sample}…")])
         else:
-            title = "Import JSON (paste in panel)"
             header = Text([("head", "  Paste JSON below, then press "), ("special", "Ctrl+E"), ("head", " to import  |  "), ("special", "Esc"), ("head", " to cancel")])
         pile = Pile([
             ("pack", AttrMap(header, "default")),
@@ -4476,15 +4660,20 @@ class ImportJSONOverlay(WidgetWrap):
         if not text:
             self._result.set_text([("error", "  No JSON entered")])
             return
-        if self._app._selected_directory_id is None:
-            self._result.set_text([("error", "  No directory selected")])
+
+        target = self._target_id
+        if target is None:
+            self._result.set_text([("error", "  No target selected")])
             return
+
+        import_fn = self._import_fn
+        if import_fn is None:
+            import_fn = lambda t, tid: io_cmds.import_tasks_from_directory_json(t, tid)
 
         self._importing = True
         self._result.set_text([("default", "  Importing...")])
-        target_dir = self._app._selected_directory_id
         self._app._run_async(
-            lambda: io_cmds.import_tasks_from_directory_json(text, target_dir),
+            lambda: import_fn(text, target),
             lambda r: self._on_import_done(r),
             "Importing...",
         )

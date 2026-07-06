@@ -18,6 +18,12 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Inject version
+        run: |
+          VER="${{ github.ref_name }}"
+          VER="${VER#v}"
+          echo "__version__ = \"${VER}\"" > taskwatch/__init__.py
+
       - name: Install dependencies
         run: |
           pip install -e . pyinstaller
@@ -39,7 +45,9 @@ jobs:
           cp taskwatch.desktop taskwatch-${{ github.ref_name }}/
           cp TaskWatch+.png taskwatch-${{ github.ref_name }}/
           cp install.sh taskwatch-${{ github.ref_name }}/
+          cp update.sh taskwatch-${{ github.ref_name }}/
           chmod +x taskwatch-${{ github.ref_name }}/install.sh
+          chmod +x taskwatch-${{ github.ref_name }}/update.sh
           cp -r config taskwatch-${{ github.ref_name }}/
           tar czf taskwatch-${{ github.ref_name }}-linux-x86_64.tar.gz taskwatch-${{ github.ref_name }}/
 
