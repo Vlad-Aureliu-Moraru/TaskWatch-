@@ -199,7 +199,7 @@ def all_directory_stats() -> list[dict]:
     ).fetchall()
     return [
         {
-            "name": f"{r['arch_name']} \u25b8 {r['name']}",
+            "name": f"{r['arch_name']} > {r['name']}",
             "total": r["total"],
             "done": r["done"],
             "pct": round((r["done"] / r["total"] * 100) if r["total"] else 0),

@@ -1217,8 +1217,7 @@ class TaskWatchTUI:
             lines.append([("dim", f"Note #{n.id}")])
             lines.append("")
             if n.note:
-                for line in n.note.split("\n"):
-                    lines.append(line)
+                lines.extend(_render_markdown_to_urwid(n.note))
             if n.file_path:
                 fp = os.path.abspath(n.file_path)
                 if os.path.isfile(fp):
@@ -4568,12 +4567,100 @@ def _parse_inline_markdown(text: str, base_style: str = "default") -> list:
     return parts if parts else [(base_style, text)]
 
 
+def _render_table(table_lines: list[str]) -> list:
+    if not table_lines:
+        return []
+
+    rows: list[list[str]] = []
+    sep_index = -1
+
+    for line in table_lines:
+        s = line.strip()
+        if s.startswith("|"):
+            s = s[1:]
+        if s.endswith("|"):
+            s = s[:-1]
+        cells = [c.strip() for c in s.split("|")]
+        rows.append(cells)
+
+    for i, cells in enumerate(rows):
+        if all(re.match(r'^:?-{1,}:?$', c) for c in cells):
+            sep_index = i
+            break
+
+    alignments: list[str] = []
+    if sep_index >= 0:
+        for c in rows[sep_index]:
+            if c.startswith(":") and c.endswith(":"):
+                alignments.append("center")
+            elif c.endswith(":"):
+                alignments.append("right")
+            else:
+                alignments.append("left")
+
+    ncols = max(len(cells) for cells in rows)
+    if not alignments:
+        alignments = ["left"] * ncols
+    while len(alignments) < ncols:
+        alignments.append("left")
+
+    col_widths = [0] * ncols
+    for i, cells in enumerate(rows):
+        if i == sep_index:
+            continue
+        for j in range(min(len(cells), ncols)):
+            col_widths[j] = max(col_widths[j], len(cells[j]))
+
+    def _pad(text: str, width: int, align: str) -> str:
+        if align == "right":
+            return text.rjust(width)
+        if align == "center":
+            left = (width - len(text)) // 2
+            return " " * left + text + " " * (width - left - len(text))
+        return text.ljust(width)
+
+    result: list = []
+
+    top = "\u250c" + "\u252c".join("\u2500" * (w + 2) for w in col_widths) + "\u2510"
+    result.append([("dim", top)])
+
+    if sep_index >= 0:
+        header_rows = rows[:sep_index]
+        body_rows = rows[sep_index + 1:]
+    else:
+        header_rows = []
+        body_rows = rows
+
+    for cells in header_rows:
+        padded = [_pad(cells[j] if j < len(cells) else "", col_widths[j], alignments[j]) for j in range(ncols)]
+        row_str = "\u2502" + "\u2502".join(f" {c} " for c in padded) + "\u2502"
+        result.append([("default", row_str)])
+
+    if sep_index >= 0:
+        div = "\u251c" + "\u253c".join("\u2500" * (w + 2) for w in col_widths) + "\u2524"
+        result.append([("dim", div)])
+
+    for cells in body_rows:
+        padded = [_pad(cells[j] if j < len(cells) else "", col_widths[j], alignments[j]) for j in range(ncols)]
+        row_str = "\u2502" + "\u2502".join(f" {c} " for c in padded) + "\u2502"
+        result.append([("default", row_str)])
+
+    bottom = "\u2514" + "\u2534".join("\u2500" * (w + 2) for w in col_widths) + "\u2518"
+    result.append([("dim", bottom)])
+
+    return result
+
+
 def _render_markdown_to_urwid(text: str) -> list:
     lines: list = []
     in_code_block = False
+    raw = text.split("\n")
+    i = 0
 
-    for line in text.split("\n"):
+    while i < len(raw):
+        line = raw[i]
         stripped = line.strip()
+        i += 1
 
         if stripped.startswith("```"):
             in_code_block = not in_code_block
@@ -4589,6 +4676,18 @@ def _render_markdown_to_urwid(text: str) -> list:
 
         if re.match(r'^[-*_]{3,}\s*$', stripped):
             lines.append([("dim", "  " + "\u2500" * 40)])
+            continue
+
+        if stripped.startswith("|") and stripped.count("|") >= 2:
+            table_lines = [line]
+            while i < len(raw):
+                nxt = raw[i].strip()
+                if nxt.startswith("|") and nxt.count("|") >= 2:
+                    table_lines.append(raw[i])
+                    i += 1
+                else:
+                    break
+            lines.extend(_render_table(table_lines))
             continue
 
         h_match = re.match(r'^(#{1,6})\s+(.+)$', stripped)

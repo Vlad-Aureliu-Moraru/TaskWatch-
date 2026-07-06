@@ -150,3 +150,47 @@ def import_tasks_from_directory_json(json_str: str, target_directory_id: int) ->
     if errors:
         msg += f". {len(errors)} error(s): {'; '.join(errors[:3])}"
     return True, msg
+
+
+def import_notes_json(json_str: str, task_id: int) -> tuple[bool, str]:
+    try:
+        data = json.loads(json_str)
+    except json.JSONDecodeError as e:
+        return False, f"Invalid JSON: {e}"
+
+    if isinstance(data, dict):
+        if "notes" in data and isinstance(data["notes"], list):
+            data = data["notes"]
+        else:
+            data = [data]
+
+    if not isinstance(data, list):
+        return False, "Expected a JSON array of note objects"
+
+    imported = 0
+    errors: list[str] = []
+    total = len(data)
+
+    for i, entry in enumerate(data):
+        if not isinstance(entry, dict):
+            errors.append(f"Item {i} is not an object")
+            continue
+        note_text = entry.get("note", "").strip()
+        if not note_text:
+            errors.append(f"Item {i} is missing a 'note' field")
+            continue
+        try:
+            create_note(
+                task_id=task_id,
+                date=entry.get("date", date.today().isoformat()),
+                note=note_text,
+                file_path=entry.get("file_path"),
+            )
+            imported += 1
+        except ValueError as e:
+            errors.append(f"Item {i}: {e}")
+
+    msg = f"Imported {imported} of {total} note(s)"
+    if errors:
+        msg += f". {len(errors)} error(s): {'; '.join(errors[:3])}"
+    return True, msg

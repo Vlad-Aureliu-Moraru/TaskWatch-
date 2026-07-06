@@ -689,6 +689,56 @@ def get_announcements(archive_id: int | None = None) -> list[dict]:
     return [{"task": _row_to_task(r), "dir_name": r["dir_name"], "arch_name": r["arch_name"]} for r in rows]
 
 
+def get_tags_for_task_display(task_id: int) -> str:
+    from .tag_cmds import get_tags_for_task
+    tags = get_tags_for_task(task_id)
+    return ", ".join(t.name for t in tags) if tags else ""
+
+
+def format_urgency_bars(urgency: int) -> str:
+    return "".join("\u2605" if i < urgency else "\u2606" for i in range(5))
+
+
+def format_difficulty_bars(difficulty: int) -> str:
+    return "".join("\u25C9" if i < difficulty else "\u25CB" for i in range(5))
+
+
+def format_deadline_text(deadline: str) -> str:
+    if deadline in (None, "", "none"):
+        return ""
+    try:
+        dt = datetime.strptime(deadline, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return f"[deadline:{deadline}]"
+    today = date.today()
+    diff = (dt - today).days
+    if diff < 0:
+        return f"[overdue {abs(diff)}d]"
+    if diff == 0:
+        return "[due today]"
+    if diff == 1:
+        return "[due tomorrow]"
+    if diff < 7:
+        return f"[due in {diff}d]"
+    return f"[deadline:{deadline}]"
+
+
+def list_unfinished_tasks(directory_id: int) -> list[Task]:
+    return list_tasks(directory_id=directory_id, finished=False)
+
+
+def resolve_directory(name_or_id: str | int) -> int | None:
+    from .directory_cmds import get_directory, search_directories_global
+    if isinstance(name_or_id, int) or (isinstance(name_or_id, str) and name_or_id.isdigit()):
+        dir_id = int(name_or_id)
+        if get_directory(dir_id):
+            return dir_id
+    dirs = search_directories_global(str(name_or_id), limit=1)
+    if dirs:
+        return dirs[0].id
+    return None
+
+
 def _row_to_task(r) -> Task:
     return Task(
         id=r["id"],

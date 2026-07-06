@@ -14,6 +14,7 @@ from . import (
     stats_cmds,
     subtask_cmds,
     tag_cmds,
+    task_cmds,
     timer,
 )
 from .db import close
