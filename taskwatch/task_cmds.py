@@ -612,7 +612,7 @@ def move_task(task_id: int, new_directory_id: int) -> Task | None:
     return get_task(task_id)
 
 
-def move_task(task_id: int, direction: str) -> bool:
+def _move_task_by_direction(task_id: int, direction: str) -> bool:
     conn = get_conn()
     t = conn.execute("SELECT id, directory_id, position FROM tasks WHERE id = ?", (task_id,)).fetchone()
     if t is None:
@@ -636,11 +636,11 @@ def move_task(task_id: int, direction: str) -> bool:
 
 
 def move_task_up(task_id: int) -> bool:
-    return move_task(task_id, "up")
+    return _move_task_by_direction(task_id, "up")
 
 
 def move_task_down(task_id: int) -> bool:
-    return move_task(task_id, "down")
+    return _move_task_by_direction(task_id, "down")
 
 
 def list_all_tasks(archive_id: int,

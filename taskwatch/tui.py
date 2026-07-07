@@ -1091,13 +1091,13 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
     def _cmd_move_up(self) -> None:
         if self._level == Level.TASKS and not self._sort_field:
             sid = self._get_selected_id()
-            if sid is not None and task_cmds.move_task(sid, "up"):
+            if sid is not None and task_cmds.move_task_up(sid):
                 self._refresh_list()
 
     def _cmd_move_down(self) -> None:
         if self._level == Level.TASKS and not self._sort_field:
             sid = self._get_selected_id()
-            if sid is not None and task_cmds.move_task(sid, "down"):
+            if sid is not None and task_cmds.move_task_down(sid):
                 self._refresh_list()
 
     def _cmd_move(self, cmd: str) -> None:
