@@ -1,10 +1,11 @@
 import json
-from datetime import date
+import time
+from datetime import date, datetime
 from pathlib import Path
 
 from .db import get_conn
 from .note_cmds import create_note
-from .tag_cmds import add_tag_to_task
+from .tag_cmds import add_tag_to_task, create_tag
 from .task_cmds import create_task
 
 ALLOWED_TABLES = frozenset({"archives", "directories", "tasks", "notes", "tags", "task_tags"})
@@ -194,3 +195,373 @@ def import_notes_json(json_str: str, task_id: int) -> tuple[bool, str]:
     if errors:
         msg += f". {len(errors)} error(s): {'; '.join(errors[:3])}"
     return True, msg
+
+
+def _fetch_all(conn, table: str, ids: list[int], id_col: str = "id") -> list[dict]:
+    if not ids:
+        return []
+    ph = ",".join("?" for _ in ids)
+    return [dict(r) for r in conn.execute(f"SELECT * FROM {table} WHERE {id_col} IN ({ph})", ids).fetchall()]
+
+
+def _build_archive_export(archive_id: int, conn) -> dict:
+    data: dict = {}
+    a = conn.execute("SELECT * FROM archives WHERE id = ?", (archive_id,)).fetchone()
+    if not a:
+        return data
+    data["archive"] = dict(a)
+    dirs = conn.execute("SELECT * FROM directories WHERE archive_id = ?", (archive_id,)).fetchall()
+    data["directories"] = [dict(d) for d in dirs]
+    dir_ids = [d["id"] for d in dirs]
+    if dir_ids:
+        ph = ",".join("?" for _ in dir_ids)
+        tasks = conn.execute(f"SELECT * FROM tasks WHERE directory_id IN ({ph})", dir_ids).fetchall()
+        data["tasks"] = [dict(t) for t in tasks]
+        task_ids = [t["id"] for t in tasks]
+        if task_ids:
+            data["notes"] = _fetch_all(conn, "notes", task_ids, "task_id")
+            data["subtasks"] = _fetch_all(conn, "subtasks", task_ids, "task_id")
+            ttags = _fetch_all(conn, "task_tags", task_ids, "task_id")
+            data["task_tags"] = ttags
+            data["task_dependencies"] = _fetch_all(conn, "task_dependencies", task_ids, "task_id")
+            tag_ids = list({r["tag_id"] for r in ttags})
+            data["tags"] = _fetch_all(conn, "tags", tag_ids)
+    return data
+
+
+def _build_directory_export(directory_id: int, conn) -> dict:
+    data: dict = {}
+    d = conn.execute("SELECT * FROM directories WHERE id = ?", (directory_id,)).fetchone()
+    if not d:
+        return data
+    data["directory"] = dict(d)
+    a = conn.execute("SELECT * FROM archives WHERE id = ?", (d["archive_id"],)).fetchone()
+    if a:
+        data["archive"] = dict(a)
+    tasks = conn.execute("SELECT * FROM tasks WHERE directory_id = ?", (directory_id,)).fetchall()
+    data["tasks"] = [dict(t) for t in tasks]
+    task_ids = [t["id"] for t in tasks]
+    if task_ids:
+        data["notes"] = _fetch_all(conn, "notes", task_ids, "task_id")
+        data["subtasks"] = _fetch_all(conn, "subtasks", task_ids, "task_id")
+        ttags = _fetch_all(conn, "task_tags", task_ids, "task_id")
+        data["task_tags"] = ttags
+        data["task_dependencies"] = _fetch_all(conn, "task_dependencies", task_ids, "task_id")
+        tag_ids = list({r["tag_id"] for r in ttags})
+        data["tags"] = _fetch_all(conn, "tags", tag_ids)
+    return data
+
+
+def _build_task_export(task_id: int, conn) -> dict:
+    data: dict = {}
+    t = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if not t:
+        return data
+    data["task"] = dict(t)
+    d = conn.execute("SELECT * FROM directories WHERE id = ?", (t["directory_id"],)).fetchone()
+    if d:
+        data["directory"] = dict(d)
+        a = conn.execute("SELECT * FROM archives WHERE id = ?", (d["archive_id"],)).fetchone()
+        if a:
+            data["archive"] = dict(a)
+    data["notes"] = _fetch_all(conn, "notes", [task_id], "task_id")
+    data["subtasks"] = _fetch_all(conn, "subtasks", [task_id], "task_id")
+    ttags = _fetch_all(conn, "task_tags", [task_id], "task_id")
+    data["task_tags"] = ttags
+    data["task_dependencies"] = _fetch_all(conn, "task_dependencies", [task_id], "task_id")
+    tag_ids = list({r["tag_id"] for r in ttags})
+    data["tags"] = _fetch_all(conn, "tags", tag_ids)
+    return data
+
+
+def _build_note_export(note_id: int, conn) -> dict:
+    data: dict = {}
+    n = conn.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
+    if n:
+        data["note"] = dict(n)
+    return data
+
+
+def export_current_item(level_name: str, selected_id: int, path: str | None = None) -> bool:
+    conn = get_conn()
+    try:
+        builders = {
+            "ARCHIVES": _build_archive_export,
+            "DIRECTORIES": _build_directory_export,
+            "TASKS": _build_task_export,
+            "NOTES": _build_note_export,
+        }
+        builder = builders.get(level_name)
+        if not builder:
+            return False
+        data = builder(selected_id, conn)
+        if not data:
+            return False
+        type_map = {"ARCHIVES": "archive", "DIRECTORIES": "directory", "TASKS": "task", "NOTES": "note"}
+        data["export_type"] = type_map[level_name]
+        data["exported_at"] = datetime.now().isoformat()
+        out = path or "/tmp/taskwatch_export_current.json"
+        Path(out).write_text(json.dumps(data, indent=2, default=str))
+        return True
+    except Exception:
+        return False
+
+
+def _unique_name(base: str, exists_fn) -> str:
+    if not exists_fn(base):
+        return base
+    for i in range(2, 100):
+        cand = f"{base} (Imported {i})"
+        if not exists_fn(cand):
+            return cand
+    return f"{base} (Imported {int(time.time())})"
+
+
+def _import_task_children(data: dict, conn, old_to_new_task: dict[int, int]) -> None:
+    if not old_to_new_task:
+        return
+    all_new = set(old_to_new_task.values())
+    notes = data.get("notes", [])
+    for n in notes:
+        new_tid = old_to_new_task.get(n["task_id"])
+        if new_tid:
+            create_note(
+                task_id=new_tid,
+                date=n.get("date", date.today().isoformat()),
+                note=n.get("note", ""),
+                file_path=n.get("file_path"),
+            )
+    subs = data.get("subtasks", [])
+    for s in subs:
+        new_tid = old_to_new_task.get(s["task_id"])
+        if new_tid:
+            conn.execute(
+                "INSERT INTO subtasks (task_id, content, finished, position) VALUES (?, ?, ?, ?)",
+                (new_tid, s["content"], s.get("finished", 0), s.get("position", 0)),
+            )
+    ttags = data.get("task_tags", [])
+    for tt in ttags:
+        new_tid = old_to_new_task.get(tt["task_id"])
+        if new_tid:
+            tag = create_tag(tt["tag_name"] if "tag_name" in tt else "")
+            if not tag:
+                old_name = next(
+                    (tg["name"] for tg in data.get("tags", []) if tg["id"] == tt["tag_id"]),
+                    None,
+                )
+                if old_name:
+                    tag = create_tag(old_name)
+            if tag:
+                conn.execute(
+                    "INSERT OR IGNORE INTO task_tags (task_id, tag_id) VALUES (?, ?)",
+                    (new_tid, tag.id),
+                )
+    deps = data.get("task_dependencies", [])
+    for dp in deps:
+        new_tid = old_to_new_task.get(dp["task_id"])
+        new_dep = old_to_new_task.get(dp["depends_on_task_id"])
+        if new_tid and new_dep and new_dep in all_new:
+            conn.execute(
+                "INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_task_id) VALUES (?, ?)",
+                (new_tid, new_dep),
+            )
+    conn.commit()
+
+
+def _do_import_archive(data: dict, conn) -> str:
+    arch = data.get("archive", {})
+    if not arch:
+        return "Import failed: no archive data in file"
+
+    name = _unique_name(
+        arch["name"],
+        lambda n: conn.execute("SELECT 1 FROM archives WHERE name = ?", (n,)).fetchone() is not None,
+    )
+    cur = conn.execute("INSERT INTO archives (name) VALUES (?)", (name,))
+    new_archive_id = cur.lastrowid
+    conn.commit()
+
+    old_to_new_dir: dict[int, int] = {}
+    for d in data.get("directories", []):
+        d_name = _unique_name(
+            d["name"],
+            lambda n, aid=new_archive_id: conn.execute(
+                "SELECT 1 FROM directories WHERE name = ? AND archive_id = ?", (n, aid)
+            ).fetchone() is not None,
+        )
+        cur = conn.execute(
+            "INSERT INTO directories (archive_id, name) VALUES (?, ?)",
+            (new_archive_id, d_name),
+        )
+        old_to_new_dir[d["id"]] = cur.lastrowid
+
+    old_to_new_task: dict[int, int] = {}
+    for t in data.get("tasks", []):
+        new_did = old_to_new_dir.get(t["directory_id"])
+        if new_did is None:
+            continue
+        t_name = _unique_name(
+            t["name"],
+            lambda n, did=new_did: conn.execute(
+                "SELECT 1 FROM tasks WHERE name = ? AND directory_id = ?", (n, did)
+            ).fetchone() is not None,
+        )
+        try:
+            task = create_task(
+                directory_id=new_did,
+                name=t_name,
+                description=t.get("description", ""),
+                deadline=t.get("deadline", "none"),
+                urgency=t.get("urgency", 1),
+                difficulty=t.get("difficulty", 1),
+                time_dedicated=t.get("time_dedicated", 0),
+                repeatable=bool(t.get("repeatable", False)),
+                repeatable_type=t.get("repeatable_type", "none"),
+                has_to_be_completed_to_repeat=bool(t.get("has_to_be_completed_to_repeat", True)),
+                repeat_on_specific_day=t.get("repeat_on_specific_day", "none"),
+                pinned=bool(t.get("pinned", False)),
+            )
+            old_to_new_task[t["id"]] = task.id
+        except ValueError:
+            pass
+
+    _import_task_children(data, conn, old_to_new_task)
+    conn.commit()
+    total = len(data.get("directories", [])) + len(old_to_new_task) + len(data.get("notes", []))
+    return f"Imported archive '{name}' ({total} items)"
+
+
+def _do_import_directory(data: dict, conn, archive_id: int) -> str:
+    d = data.get("directory", {})
+    if not d:
+        return "Import failed: no directory data in file"
+
+    d_name = _unique_name(
+        d["name"],
+        lambda n: conn.execute(
+            "SELECT 1 FROM directories WHERE name = ? AND archive_id = ?", (n, archive_id)
+        ).fetchone() is not None,
+    )
+    cur = conn.execute(
+        "INSERT INTO directories (archive_id, name) VALUES (?, ?)",
+        (archive_id, d_name),
+    )
+    new_dir_id = cur.lastrowid
+    conn.commit()
+
+    old_to_new_task: dict[int, int] = {}
+    for t in data.get("tasks", []):
+        t_name = _unique_name(
+            t["name"],
+            lambda n, did=new_dir_id: conn.execute(
+                "SELECT 1 FROM tasks WHERE name = ? AND directory_id = ?", (n, did)
+            ).fetchone() is not None,
+        )
+        try:
+            task = create_task(
+                directory_id=new_dir_id,
+                name=t_name,
+                description=t.get("description", ""),
+                deadline=t.get("deadline", "none"),
+                urgency=t.get("urgency", 1),
+                difficulty=t.get("difficulty", 1),
+                time_dedicated=t.get("time_dedicated", 0),
+                repeatable=bool(t.get("repeatable", False)),
+                repeatable_type=t.get("repeatable_type", "none"),
+                has_to_be_completed_to_repeat=bool(t.get("has_to_be_completed_to_repeat", True)),
+                repeat_on_specific_day=t.get("repeat_on_specific_day", "none"),
+                pinned=bool(t.get("pinned", False)),
+            )
+            old_to_new_task[t["id"]] = task.id
+        except ValueError:
+            pass
+
+    _import_task_children(data, conn, old_to_new_task)
+    total = len(old_to_new_task) + len(data.get("notes", []))
+    return f"Imported directory '{d_name}' ({total} items)"
+
+
+def _do_import_task(data: dict, conn, directory_id: int) -> str:
+    t = data.get("task", {})
+    if not t:
+        return "Import failed: no task data in file"
+
+    t_name = _unique_name(
+        t["name"],
+        lambda n: conn.execute(
+            "SELECT 1 FROM tasks WHERE name = ? AND directory_id = ?", (n, directory_id)
+        ).fetchone() is not None,
+    )
+    try:
+        task = create_task(
+            directory_id=directory_id,
+            name=t_name,
+            description=t.get("description", ""),
+            deadline=t.get("deadline", "none"),
+            urgency=t.get("urgency", 1),
+            difficulty=t.get("difficulty", 1),
+            time_dedicated=t.get("time_dedicated", 0),
+            repeatable=bool(t.get("repeatable", False)),
+            repeatable_type=t.get("repeatable_type", "none"),
+            has_to_be_completed_to_repeat=bool(t.get("has_to_be_completed_to_repeat", True)),
+            repeat_on_specific_day=t.get("repeat_on_specific_day", "none"),
+            pinned=bool(t.get("pinned", False)),
+        )
+    except ValueError as e:
+        return f"Import failed: {e}"
+
+    old_to_new_task = {t["id"]: task.id}
+    _import_task_children(data, conn, old_to_new_task)
+    total = 1 + len(data.get("notes", []))
+    return f"Imported task '{t_name}' ({total} items)"
+
+
+def _do_import_note(data: dict, conn, task_id: int) -> str:
+    n = data.get("note", {})
+    if not n:
+        return "Import failed: no note data in file"
+    create_note(
+        task_id=task_id,
+        date=n.get("date", date.today().isoformat()),
+        note=n.get("note", ""),
+        file_path=n.get("file_path"),
+    )
+    return "Imported 1 note"
+
+
+def import_exported_item(
+    path: str,
+    current_level_name: str,
+    archive_id: int | None = None,
+    directory_id: int | None = None,
+    task_id: int | None = None,
+) -> str:
+    try:
+        raw = Path(path).read_text()
+        data = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as e:
+        return f"Failed to read file: {e}"
+
+    export_type = data.get("export_type")
+    if export_type not in ("archive", "directory", "task", "note"):
+        return f"Unknown export type '{export_type}'"
+
+    conn = get_conn()
+    try:
+        if export_type == "archive":
+            return _do_import_archive(data, conn)
+        elif export_type == "directory":
+            if archive_id is None:
+                return "Navigate into an archive first, then :importExported"
+            return _do_import_directory(data, conn, archive_id)
+        elif export_type == "task":
+            if directory_id is None:
+                return "Navigate into a directory first, then :importExported"
+            return _do_import_task(data, conn, directory_id)
+        elif export_type == "note":
+            if task_id is None:
+                return "Select a task first, then :importExported"
+            return _do_import_note(data, conn, task_id)
+    except Exception as e:
+        conn.rollback()
+        return f"Import failed: {e}"
