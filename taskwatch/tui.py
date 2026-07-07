@@ -151,6 +151,10 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         self._notify_deadlines_enabled: bool = True
         self._bulk_selection: set[int] = set()
         self._all_tasks_mode: bool = False
+        self._focus_mode: bool = False
+        self._focus_timer_text: Text | None = None
+        self._focus_task_name: Text | None = None
+        self._saved_body: object | None = None
         self._search_debounce_alarm: object | None = None
         self._caption_alarm_handle: object | None = None
         self._current_prompt: str | tuple = ("standout", "\u276f ")
@@ -224,7 +228,9 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
 
         self._frame = MainFrame(self)
         self._loop = urwid.MainLoop(
-            self._frame, PALETTE, unhandled_input=self._unhandled_input
+            self._frame, PALETTE,
+            unhandled_input=self._unhandled_input,
+            handle_mouse=True,
         )
         self._list_walker: SimpleFocusListWalker
         self._list_box: ListBox
@@ -855,6 +861,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         "sdl d": "_cmd_sort_deadline_desc",
         "sr": "_cmd_sort_reset",
         "ftc": "_cmd_filter_tag_clear",
+        "focus": "_cmd_toggle_focus",
     }
 
     _CMD_PREFIX_DISPATCH: list[tuple[str, str]] = [
@@ -2597,6 +2604,42 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         except OSError:
             pass
 
+    def _build_focus_body(self) -> urwid.Filler:
+        from .task_cmds import get_task
+        task = get_task(self._selected_task_id) if self._selected_task_id else None
+        name = task.name if task else "No task selected"
+        self._focus_timer_text = Text(("bold", "00:00:00"), align="center")
+        self._focus_task_name = Text(("head", name), align="center")
+        lines = [
+            urwid.Divider(),
+            urwid.Text(("head", "FOCUS MODE"), align="center"),
+            urwid.Divider(),
+            self._focus_task_name,
+            urwid.Divider(),
+            self._focus_timer_text,
+            urwid.Divider(),
+            urwid.Text(("dim", "p: pause  s: stop  :focus: exit  q: quit"), align="center"),
+        ]
+        return urwid.Filler(urwid.Pile(lines), valign="middle")
+
+    def _cmd_toggle_focus(self) -> None:
+        if not self._focus_mode:
+            if self._selected_task_id is None and self._level != Level.TASKS:
+                self._set_timed_caption("error", "Select a task first ")
+                return
+            self._saved_body = self._frame.body
+            self._frame.body = self._build_focus_body()
+            self._focus_mode = True
+            self._update_clock_display()
+        else:
+            self._frame.body = self._saved_body
+            self._focus_mode = False
+            self._focus_timer_text = None
+            self._focus_task_name = None
+            self._saved_body = None
+            self._show_detail()
+        self._loop.draw_screen()
+
     def _show_schedule_bar(self) -> None:
         if not self._timer_running or not self._timer_schedule:
             ow = LineBox(Text("  No active timer schedule"))
@@ -2830,6 +2873,22 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         self._focus_body()
 
     def _unhandled_input(self, key: str) -> None:
+        if isinstance(key, tuple) and len(key) == 4:
+            event, button, x, y = key
+            if event == "mouse press":
+                if button == 1 and self._frame.focus_position == "body":
+                    self._select()
+                elif button == 3:
+                    self._go_back()
+            return
+        if self._focus_mode:
+            if key == "p":
+                self._cmd_pause_timer()
+                return
+            if key == "s":
+                self._stop_timer()
+                return
+            return
         if self._loop.widget is not self._frame:
             if key in ("esc", "q"):
                 if self._help_overlay is not None and self._loop.widget is self._help_overlay:

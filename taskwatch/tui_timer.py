@@ -465,8 +465,18 @@ class _TimerMixin:
             m, s = divmod(m, 60)
             pause_ind = " \u23f8" if self._timer_paused else ""
             phase_ind = f"\u25b6 {phase}  " if phase else ""
-            self._clock_text.set_text(f"{phase_ind}\u23f1 {h:02d}:{m:02d}:{s:02d}{pause_ind}")
+            display = f"{phase_ind}\u23f1 {h:02d}:{m:02d}:{s:02d}{pause_ind}"
+            self._clock_text.set_text(display)
             self._clock_w.set_attr_map({None: attr})
+            if self._focus_mode and self._focus_timer_text:
+                timer_only = f"{h:02d}:{m:02d}:{s:02d}"
+                phase_label = f"  {phase}" if phase else ""
+                pause_label = " \u23f8 PAUSED" if self._timer_paused else ""
+                self._focus_timer_text.set_text(f"{timer_only}{phase_label}{pause_label}")
+                if self._focus_task_name and self._selected_task_id:
+                    task = task_cmds.get_task(self._selected_task_id)
+                    if task:
+                        self._focus_task_name.set_text(("head", task.name))
         else:
             self._clock_text.set_text(now.strftime("%H:%M:%S"))
             self._clock_w.set_attr_map({None: "dim"})

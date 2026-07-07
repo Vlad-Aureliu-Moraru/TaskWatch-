@@ -128,7 +128,7 @@ COMMANDS = [
     "sound work ", "sound break ", "sound done ",
     "pin", "unpin", "depends ", "undepends ",
     "subadd ", "subrm ", "subdone ", "subedit ",
-    "snooze ", "dup", "standup", "select ",
+    "snooze ", "dup", "standup", "select ", "focus",
     "preset ", "preset list", "preset add", "preset remove",
     "update",
 ]
@@ -168,7 +168,9 @@ HELP_TEXT = (
     "  :q | :exit            Quit\n"
     "  Tab                   Cycle command completions\n"
     "  \u2191/\u2193              Recall command history (in command bar)\n"
-    "  Space                 Toggle bulk selection (task list)\n\n"
+    "  Space                 Toggle bulk selection (task list)\n"
+    "  Left click            Select / navigate into item\n"
+    "  Right click           Go back\n\n"
     "Search:\n"
     "  /                    Search items in list (type text, Enter to apply, Esc to clear)\n"
     "  //                   Global fuzzy search (tasks, directories, tags)\n"
@@ -224,6 +226,8 @@ HELP_TEXT = (
     "  :pt | :pauseTimer     Pause / unpause timer\n"
     "  :rt | :resetTimer     Reset timer\n"
     "  :schbar               Show timer schedule bar\n"
+    "  :focus                Toggle focus mode (big timer, hides list)\n"
+    "                         p: pause  s: stop  :focus: exit\n"
     "  :preset list          List timer presets\n"
     "  :preset add <n> <p> <w> <b> <l>  Add preset (times: 30m, 15s, 1h, 1h30m)\n"
     "  :preset remove <n>    Remove preset\n"
