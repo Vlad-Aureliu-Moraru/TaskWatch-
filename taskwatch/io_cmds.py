@@ -17,7 +17,7 @@ ALLOWED_COLUMNS = {
         "id", "directory_id", "name", "description", "deadline", "urgency",
         "difficulty", "time_dedicated", "repeatable", "repeatable_type",
         "finished", "finished_date", "has_to_be_completed_to_repeat",
-        "repeat_on_specific_day", "position",
+        "repeat_on_specific_day", "position", "pinned",
     }),
     "notes": frozenset({"id", "task_id", "date", "note", "file_path", "created_at"}),
     "tags": frozenset({"id", "name"}),
@@ -343,19 +343,17 @@ def _import_task_children(data: dict, conn, old_to_new_task: dict[int, int]) -> 
     for tt in ttags:
         new_tid = old_to_new_task.get(tt["task_id"])
         if new_tid:
-            tag = create_tag(tt["tag_name"] if "tag_name" in tt else "")
-            if not tag:
-                old_name = next(
-                    (tg["name"] for tg in data.get("tags", []) if tg["id"] == tt["tag_id"]),
-                    None,
-                )
-                if old_name:
-                    tag = create_tag(old_name)
-            if tag:
-                conn.execute(
-                    "INSERT OR IGNORE INTO task_tags (task_id, tag_id) VALUES (?, ?)",
-                    (new_tid, tag.id),
-                )
+            old_name = next(
+                (tg["name"] for tg in data.get("tags", []) if tg["id"] == tt["tag_id"]),
+                None,
+            )
+            if old_name:
+                tag = create_tag(old_name)
+                if tag:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO task_tags (task_id, tag_id) VALUES (?, ?)",
+                        (new_tid, tag.id),
+                    )
     deps = data.get("task_dependencies", [])
     for dp in deps:
         new_tid = old_to_new_task.get(dp["task_id"])
@@ -422,6 +420,11 @@ def _do_import_archive(data: dict, conn) -> str:
                 pinned=bool(t.get("pinned", False)),
             )
             old_to_new_task[t["id"]] = task.id
+            if t.get("finished"):
+                conn.execute(
+                    "UPDATE tasks SET finished = 1, finished_date = ? WHERE id = ?",
+                    (t.get("finished_date", "none"), task.id),
+                )
         except ValueError:
             pass
 
@@ -473,6 +476,11 @@ def _do_import_directory(data: dict, conn, archive_id: int) -> str:
                 pinned=bool(t.get("pinned", False)),
             )
             old_to_new_task[t["id"]] = task.id
+            if t.get("finished"):
+                conn.execute(
+                    "UPDATE tasks SET finished = 1, finished_date = ? WHERE id = ?",
+                    (t.get("finished_date", "none"), task.id),
+                )
         except ValueError:
             pass
 
@@ -509,6 +517,12 @@ def _do_import_task(data: dict, conn, directory_id: int) -> str:
         )
     except ValueError as e:
         return f"Import failed: {e}"
+
+    if t.get("finished"):
+        conn.execute(
+            "UPDATE tasks SET finished = 1, finished_date = ? WHERE id = ?",
+            (t.get("finished_date", "none"), task.id),
+        )
 
     old_to_new_task = {t["id"]: task.id}
     _import_task_children(data, conn, old_to_new_task)
