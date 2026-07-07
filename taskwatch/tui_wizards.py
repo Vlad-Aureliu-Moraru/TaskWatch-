@@ -261,6 +261,56 @@ class _WizardMixin:
         task_cmds.delete_task(sid)
         self._refresh_list()
 
+    def _wiz_confirm_delete_directory(self, sid: int, answer: str) -> None:
+        if answer.lower() in ("y", "yes"):
+            self._do_remove_directory(sid)
+        self._end_wizard()
+
+    def _wiz_confirm_delete_archive(self, sid: int, answer: str) -> None:
+        if answer.lower() in ("y", "yes"):
+            self._do_remove_archive(sid)
+        self._end_wizard()
+
+    def _wiz_confirm_delete_note(self, sid: int, answer: str) -> None:
+        if answer.lower() in ("y", "yes"):
+            self._do_remove_note(sid)
+        self._end_wizard()
+
+    def _do_remove_directory(self, sid: int) -> None:
+        dir_data = directory_cmds.get_directory(sid)
+        if dir_data is not None:
+            undo_cmds.push("directory_delete", {
+                "id": dir_data.id,
+                "archive_id": dir_data.archive_id,
+                "name": dir_data.name,
+            })
+        directory_cmds.delete_directory(sid)
+        self._refresh_list()
+
+    def _do_remove_archive(self, sid: int) -> None:
+        arch_data = archive_cmds.get_archive(sid)
+        if arch_data is not None:
+            undo_cmds.push("archive_delete", {
+                "id": arch_data.id,
+                "name": arch_data.name,
+            })
+        archive_cmds.delete_archive(sid)
+        self._refresh_list()
+
+    def _do_remove_note(self, sid: int) -> None:
+        note_data = note_cmds.get_note(sid)
+        if note_data is not None:
+            undo_cmds.push("note_delete", {
+                "id": note_data.id,
+                "task_id": note_data.task_id,
+                "date": note_data.date,
+                "note": note_data.note,
+                "file_path": note_data.file_path,
+                "created_at": note_data.created_at,
+            })
+        note_cmds.delete_note(sid)
+        self._refresh_list()
+
     def _edit_task(self, step: int, value: object) -> None:
         field_map = {
             1: "name",

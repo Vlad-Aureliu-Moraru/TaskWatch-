@@ -1402,41 +1402,88 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
             )
 
     def _cmd_edit(self) -> None:
+        sid = self._get_selected_id()
+        if sid is None:
+            return
         if self._level == Level.TASKS:
-            sid = self._get_selected_id()
-            if sid is not None:
-                task = task_cmds.get_task(sid)
-                if task:
-                    self._edit_ctx = {
-                        "task_id": task.id,
-                        "name": task.name,
-                        "description": task.description,
-                        "urgency": task.urgency,
-                        "difficulty": task.difficulty,
-                        "time_dedicated": task.time_dedicated,
-                        "deadline": task.deadline,
-                        "repeatable": task.repeatable,
-                        "repeatable_type": task.repeatable_type,
-                        "has_to_be_completed_to_repeat": task.has_to_be_completed_to_repeat,
-                        "repeat_on_specific_day": task.repeat_on_specific_day,
-                    }
-                    self._edit_task_defaults = {
-                        "urgency": task.urgency,
-                        "difficulty": task.difficulty,
-                    }
-                    self._start_wizard(
-                        f"Task name [{task.name}]: ",
-                        self._wiz_edit_task_name,
-                    )
+            task = task_cmds.get_task(sid)
+            if task:
+                self._edit_ctx = {
+                    "task_id": task.id,
+                    "name": task.name,
+                    "description": task.description,
+                    "urgency": task.urgency,
+                    "difficulty": task.difficulty,
+                    "time_dedicated": task.time_dedicated,
+                    "deadline": task.deadline,
+                    "repeatable": task.repeatable,
+                    "repeatable_type": task.repeatable_type,
+                    "has_to_be_completed_to_repeat": task.has_to_be_completed_to_repeat,
+                    "repeat_on_specific_day": task.repeat_on_specific_day,
+                }
+                self._edit_task_defaults = {
+                    "urgency": task.urgency,
+                    "difficulty": task.difficulty,
+                }
+                self._start_wizard(
+                    f"Task name [{task.name}]: ",
+                    self._wiz_edit_task_name,
+                )
+        elif self._level == Level.DIRECTORIES:
+            dir_ = directory_cmds.get_directory(sid)
+            if dir_:
+                undo_cmds.push("directory_edit", {"id": dir_.id, "name": dir_.name})
+                self._start_wizard(
+                    f"New name [{dir_.name}]: ",
+                    partial(self._wiz_edit_dir, dir_.id, dir_.name),
+                )
+        elif self._level == Level.ARCHIVES:
+            arch = archive_cmds.get_archive(sid)
+            if arch:
+                undo_cmds.push("archive_edit", {"id": arch.id, "name": arch.name})
+                self._start_wizard(
+                    f"New name [{arch.name}]: ",
+                    partial(self._wiz_edit_archive, arch.id, arch.name),
+                )
+        elif self._level == Level.NOTES:
+            note = note_cmds.get_note(sid)
+            if note:
+                undo_cmds.push("note_edit", {
+                    "id": note.id,
+                    "note": note.note,
+                    "date": note.date,
+                    "file_path": note.file_path,
+                    "created_at": note.created_at,
+                })
+                self._start_wizard(
+                    f"Edit note ({note.note[:40]}...): ",
+                    partial(self._wiz_edit_note, note.id),
+                )
 
     def _cmd_remove(self) -> None:
+        sid = self._get_selected_id()
+        if sid is None:
+            return
         if self._level == Level.TASKS:
-            sid = self._get_selected_id()
-            if sid is not None:
-                self._start_wizard(
-                    f"Delete task {sid}? (y/n): ",
-                    partial(self._wiz_confirm_delete, sid),
-                )
+            self._start_wizard(
+                f"Delete task {sid}? (y/n): ",
+                partial(self._wiz_confirm_delete, sid),
+            )
+        elif self._level == Level.DIRECTORIES:
+            self._start_wizard(
+                f"Delete directory {sid}? (y/n): ",
+                partial(self._wiz_confirm_delete_directory, sid),
+            )
+        elif self._level == Level.ARCHIVES:
+            self._start_wizard(
+                f"Delete archive {sid}? (y/n): ",
+                partial(self._wiz_confirm_delete_archive, sid),
+            )
+        elif self._level == Level.NOTES:
+            self._start_wizard(
+                f"Delete note {sid}? (y/n): ",
+                partial(self._wiz_confirm_delete_note, sid),
+            )
 
     def _save_edit_task(self) -> None:
         ctx = self._edit_ctx
@@ -2016,7 +2063,9 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
             with open(config_path) as f:
                 for line in f:
                     if line.startswith("TERMINAL:"):
-                        return line.split(":", 1)[1].strip()
+                        term = line.split(":", 1)[1].strip()
+                        if shutil.which(term):
+                            return term
         except OSError:
             pass
         term = _detect_terminal()
@@ -2651,6 +2700,45 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         elif action == "task_unfinish":
             t = task_cmds.mark_done(data["task_id"])
             success = t is not None
+        elif action == "directory_delete":
+            conn = db_mod.get_conn()
+            try:
+                conn.execute(
+                    "INSERT INTO directories (id, archive_id, name) VALUES (?, ?, ?)",
+                    (data["id"], data["archive_id"], data["name"]),
+                )
+                conn.commit()
+            except Exception:
+                success = False
+        elif action == "archive_delete":
+            conn = db_mod.get_conn()
+            try:
+                conn.execute(
+                    "INSERT INTO archives (id, name) VALUES (?, ?)",
+                    (data["id"], data["name"]),
+                )
+                conn.commit()
+            except Exception:
+                success = False
+        elif action == "note_delete":
+            conn = db_mod.get_conn()
+            try:
+                conn.execute(
+                    "INSERT INTO notes (id, task_id, date, note, file_path, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (data["id"], data["task_id"], data["date"], data["note"], data.get("file_path"), data.get("created_at", "")),
+                )
+                conn.commit()
+            except Exception:
+                success = False
+        elif action == "directory_edit":
+            d = directory_cmds.rename_directory(data["id"], data["name"])
+            success = d is not None
+        elif action == "archive_edit":
+            a = archive_cmds.rename_archive(data["id"], data["name"])
+            success = a is not None
+        elif action == "note_edit":
+            n = note_cmds.update_note(data["id"], note=data["note"], date=data["date"], file_path=data.get("file_path"))
+            success = n is not None
         else:
             success = False
         if success:

@@ -285,14 +285,18 @@ class _TimerMixin:
             self._set_timed_caption("error", "No terminal found ")
             return
         cmd = _build_terminal_cmd(terminal, f"'{script}' ; echo; echo 'Press Enter to close...'; read")
-        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except FileNotFoundError:
+            self._set_timed_caption("error", f"Terminal '{terminal}' not found ")
+            return
         self._set_timed_caption("done", "Update started in new terminal... ")
 
     @staticmethod
     def _find_update_script() -> str | None:
         candidates = [
             Path(__file__).resolve().parent.parent / "update.sh",
-            Path.home() / ".local" / "bin" / "update.sh",
+            Path(__file__).resolve().parent.parent / "taskwatch" / "update.sh",
             Path.home() / ".local" / "share" / "taskwatch" / "update.sh",
         ]
         for p in candidates:

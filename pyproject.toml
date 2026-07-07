@@ -21,6 +21,9 @@ taskwatch = "taskwatch.__main__:main"
 [tool.setuptools]
 packages = ["taskwatch"]
 
+[tool.setuptools.package-data]
+taskwatch = ["../update.sh"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
