@@ -41,6 +41,33 @@ def restore_task(data: dict) -> bool:
                 int(data.get("pinned", False)),
             ),
         )
+
+        for n in data.get("notes", []):
+            conn.execute(
+                "INSERT INTO notes (id, task_id, date, note, file_path, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (n["id"], n["task_id"], n["date"], n["note"], n.get("file_path"), n.get("created_at", "")),
+            )
+
+        for s in data.get("subtasks", []):
+            conn.execute(
+                "INSERT INTO subtasks (id, task_id, content, finished, position) VALUES (?, ?, ?, ?, ?)",
+                (s["id"], s["task_id"], s["content"], s.get("finished", 0), s.get("position", 0)),
+            )
+
+        for tt in data.get("task_tags", []):
+            tag = conn.execute("SELECT id FROM tags WHERE id = ?", (tt["tag_id"],)).fetchone()
+            if tag:
+                conn.execute(
+                    "INSERT OR IGNORE INTO task_tags (task_id, tag_id) VALUES (?, ?)",
+                    (data["id"], tt["tag_id"]),
+                )
+
+        for ts in data.get("timer_sessions", []):
+            conn.execute(
+                "INSERT INTO timer_sessions (id, task_id, duration_seconds, date) VALUES (?, ?, ?, ?)",
+                (ts["id"], ts["task_id"], ts["duration_seconds"], ts["date"]),
+            )
+
         conn.commit()
         return True
     except Exception:

@@ -157,11 +157,13 @@ class _WizardMixin:
                 partial(self._wiz_task_repeat_type, name, urgency, difficulty, time_dedicated, deadline),
             )
         else:
-            task_cmds.create_task(
+            task = task_cmds.create_task(
                 self._selected_directory_id, name,
                 description=self._wiz_desc, urgency=urgency, difficulty=difficulty,
                 time_dedicated=time_dedicated, deadline=deadline, repeatable=False,
             )
+            if task:
+                undo_cmds.push("task_create", {"task_id": task.id})
             self._end_wizard()
 
     def _wiz_task_repeat_type(
@@ -201,12 +203,14 @@ class _WizardMixin:
         repeat_type: str, repeat_on_specific_day: str, auto_repeat_yn: str,
     ) -> None:
         to_complete = auto_repeat_yn.lower() in ("y", "yes")
-        task_cmds.create_task(
+        task = task_cmds.create_task(
             self._selected_directory_id, name, description=self._wiz_desc,
             urgency=urgency, difficulty=difficulty, time_dedicated=time_dedicated,
             deadline=deadline, repeatable=True, repeatable_type=repeat_type,
             has_to_be_completed_to_repeat=to_complete, repeat_on_specific_day=repeat_on_specific_day,
         )
+        if task:
+            undo_cmds.push("task_create", {"task_id": task.id})
         self._end_wizard()
 
     def _wiz_note_content(self, today: str, content: str) -> None:
@@ -248,15 +252,21 @@ class _WizardMixin:
             self._do_remove(sid)
         self._end_wizard()
 
+    def _attach_task_children(self, task_data: dict, sid: int, conn) -> None:
+        task_data["notes"] = [dict(r) for r in conn.execute(
+            "SELECT * FROM notes WHERE task_id = ?", (sid,))]
+        task_data["subtasks"] = [dict(r) for r in conn.execute(
+            "SELECT * FROM subtasks WHERE task_id = ?", (sid,))]
+        task_data["task_tags"] = [dict(r) for r in conn.execute(
+            "SELECT * FROM task_tags WHERE task_id = ?", (sid,))]
+        task_data["timer_sessions"] = [dict(r) for r in conn.execute(
+            "SELECT * FROM timer_sessions WHERE task_id = ?", (sid,))]
+
     def _do_remove(self, sid: int) -> None:
         task_data = undo_cmds.get_task_data(sid)
         if task_data is not None:
             conn = db_mod.get_conn()
-            notes = conn.execute(
-                "SELECT id, task_id, date, note, file_path, created_at FROM notes WHERE task_id = ?",
-                (sid,),
-            ).fetchall()
-            task_data["notes"] = [dict(n) for n in notes]
+            self._attach_task_children(task_data, sid, conn)
             undo_cmds.push("task_delete", task_data)
         task_cmds.delete_task(sid)
         self._refresh_list()
@@ -279,10 +289,20 @@ class _WizardMixin:
     def _do_remove_directory(self, sid: int) -> None:
         dir_data = directory_cmds.get_directory(sid)
         if dir_data is not None:
+            conn = db_mod.get_conn()
+            tasks = conn.execute(
+                "SELECT * FROM tasks WHERE directory_id = ?", (sid,)
+            ).fetchall()
+            saved_tasks = []
+            for t in tasks:
+                td = dict(t)
+                self._attach_task_children(td, t["id"], conn)
+                saved_tasks.append(td)
             undo_cmds.push("directory_delete", {
                 "id": dir_data.id,
                 "archive_id": dir_data.archive_id,
                 "name": dir_data.name,
+                "tasks": saved_tasks,
             })
         directory_cmds.delete_directory(sid)
         self._refresh_list()
@@ -290,9 +310,30 @@ class _WizardMixin:
     def _do_remove_archive(self, sid: int) -> None:
         arch_data = archive_cmds.get_archive(sid)
         if arch_data is not None:
+            conn = db_mod.get_conn()
+            dirs = conn.execute(
+                "SELECT * FROM directories WHERE archive_id = ?", (sid,)
+            ).fetchall()
+            saved_dirs = []
+            for d in dirs:
+                tasks = conn.execute(
+                    "SELECT * FROM tasks WHERE directory_id = ?", (d["id"],)
+                ).fetchall()
+                saved_tasks = []
+                for t in tasks:
+                    td = dict(t)
+                    self._attach_task_children(td, t["id"], conn)
+                    saved_tasks.append(td)
+                saved_dirs.append({
+                    "id": d["id"],
+                    "archive_id": d["archive_id"],
+                    "name": d["name"],
+                    "tasks": saved_tasks,
+                })
             undo_cmds.push("archive_delete", {
                 "id": arch_data.id,
                 "name": arch_data.name,
+                "directories": saved_dirs,
             })
         archive_cmds.delete_archive(sid)
         self._refresh_list()
@@ -375,18 +416,10 @@ class _WizardMixin:
         if answer.lower() in ("y", "yes"):
             tids = list(self._bulk_selection)
             conn = db_mod.get_conn()
-            all_notes: dict[int, list[dict]] = {}
-            if tids:
-                placeholders = ",".join("?" for _ in tids)
-                for row in conn.execute(
-                    f"SELECT id, task_id, date, note, file_path, created_at FROM notes WHERE task_id IN ({placeholders})",
-                    tids,
-                ):
-                    all_notes.setdefault(row["task_id"], []).append(dict(row))
             for tid in tids:
                 task_data = undo_cmds.get_task_data(tid)
                 if task_data is not None:
-                    task_data["notes"] = all_notes.get(tid, [])
+                    self._attach_task_children(task_data, tid, conn)
                     undo_cmds.push("task_delete", task_data)
                 task_cmds.delete_task(tid)
             self._bulk_selection.clear()

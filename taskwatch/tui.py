@@ -948,7 +948,9 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
             if sid is not None:
                 content = cmd.split(" ", 1)[1].strip()
                 if content:
-                    subtask_cmds.create_subtask(sid, content)
+                    sub = subtask_cmds.create_subtask(sid, content)
+                    if sub:
+                        undo_cmds.push("subtask_create", {"id": sub.id})
                     self._set_timed_caption("done", "Subtask added ")
                     self._show_detail()
 
@@ -961,6 +963,11 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
                     subs = subtask_cmds.list_subtasks(sid)
                     if 1 <= nth <= len(subs):
                         sub = subs[nth - 1]
+                        undo_cmds.push("subtask_create", {
+                            "id": sub.id, "task_id": sub.task_id,
+                            "content": sub.content, "finished": sub.finished,
+                            "position": sub.position,
+                        })
                         subtask_cmds.delete_subtask(sub.id)
                         self._set_timed_caption("done", f"Subtask {nth} removed ")
                         self._show_detail()
@@ -978,6 +985,9 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
                     subs = subtask_cmds.list_subtasks(sid)
                     if 1 <= nth <= len(subs):
                         sub = subs[nth - 1]
+                        undo_cmds.push("subtask_toggle", {
+                            "id": sub.id, "finished": sub.finished,
+                        })
                         if sub.finished:
                             subtask_cmds.mark_not_done(sub.id)
                         else:
@@ -1035,7 +1045,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
             if sid is not None:
                 task = task_cmds.get_task(sid)
                 if task:
-                    task_cmds.create_task(
+                    dup = task_cmds.create_task(
                         task.directory_id, task.name + " (copy)",
                         description=task.description, deadline=task.deadline,
                         urgency=task.urgency, difficulty=task.difficulty,
@@ -1044,6 +1054,8 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
                         has_to_be_completed_to_repeat=task.has_to_be_completed_to_repeat,
                         repeat_on_specific_day=task.repeat_on_specific_day,
                     )
+                    if dup:
+                        undo_cmds.push("task_create", {"task_id": dup.id})
                     self._set_timed_caption("done", "Task duplicated ")
                     self._refresh_list()
 
@@ -1150,11 +1162,13 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
                 if any(token.startswith(p) for p in ("u:", "U:", "d:", "D:", "t:", "T:", "dl:", "DL:")):
                     name = name.replace(token, "", 1).strip()
             if name:
-                task_cmds.create_task(
+                task = task_cmds.create_task(
                     self._selected_directory_id, name,
                     urgency=urgency, difficulty=difficulty,
                     time_dedicated=time_dedicated, deadline=deadline,
                 )
+                if task:
+                    undo_cmds.push("task_create", {"task_id": task.id})
                 self._set_timed_caption("done", "Task added ")
                 self._refresh_list()
 
@@ -1292,12 +1306,18 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
     def _cmd_tag_add(self, cmd: str) -> None:
         tag_name = cmd.split(" ", 1)[1].strip()
         if tag_name and self._selected_task_id is not None:
+            undo_cmds.push("tag_remove", {
+                "task_id": self._selected_task_id, "tag_name": tag_name,
+            })
             tag_cmds.add_tag_to_task(self._selected_task_id, tag_name)
             self._refresh_list()
 
     def _cmd_tag_remove(self, cmd: str) -> None:
         tag_name = cmd.split(" ", 1)[1].strip()
         if tag_name and self._selected_task_id is not None:
+            undo_cmds.push("tag_add", {
+                "task_id": self._selected_task_id, "tag_name": tag_name,
+            })
             tag_cmds.remove_tag_from_task(self._selected_task_id, tag_name)
             self._refresh_list()
 
@@ -2684,17 +2704,8 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         success = True
         if action == "task_delete":
             success = undo_cmds.restore_task(data)
-            if success and "notes" in data:
-                for note_data in data["notes"]:
-                    conn = db_mod.get_conn()
-                    try:
-                        conn.execute(
-                            "INSERT INTO notes (id, task_id, date, note, file_path, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                            (note_data["id"], note_data["task_id"], note_data["date"], note_data["note"], note_data.get("file_path"), note_data.get("created_at", "")),
-                        )
-                        conn.commit()
-                    except Exception:
-                        pass
+        elif action == "task_create":
+            success = task_cmds.delete_task(data["task_id"])
         elif action == "task_edit":
             t = task_cmds.edit_task(
                 data["task_id"],
@@ -2722,6 +2733,8 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
                     "INSERT INTO directories (id, archive_id, name) VALUES (?, ?, ?)",
                     (data["id"], data["archive_id"], data["name"]),
                 )
+                for t in data.get("tasks", []):
+                    undo_cmds.restore_task(t)
                 conn.commit()
             except Exception:
                 success = False
@@ -2732,6 +2745,13 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
                     "INSERT INTO archives (id, name) VALUES (?, ?)",
                     (data["id"], data["name"]),
                 )
+                for d in data.get("directories", []):
+                    conn.execute(
+                        "INSERT INTO directories (id, archive_id, name) VALUES (?, ?, ?)",
+                        (d["id"], d["archive_id"], d["name"]),
+                    )
+                    for t in d.get("tasks", []):
+                        undo_cmds.restore_task(t)
                 conn.commit()
             except Exception:
                 success = False
@@ -2754,6 +2774,24 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         elif action == "note_edit":
             n = note_cmds.update_note(data["id"], note=data["note"], date=data["date"], file_path=data.get("file_path"))
             success = n is not None
+        elif action == "tag_add":
+            tag_cmds.add_tag_to_task(data["task_id"], data["tag_name"])
+        elif action == "tag_remove":
+            tag_cmds.remove_tag_from_task(data["task_id"], data["tag_name"])
+        elif action == "subtask_create":
+            subtask_cmds.delete_subtask(data["id"])
+        elif action == "subtask_delete":
+            conn = db_mod.get_conn()
+            conn.execute(
+                "INSERT INTO subtasks (id, task_id, content, finished, position) VALUES (?, ?, ?, ?, ?)",
+                (data["id"], data["task_id"], data["content"], data.get("finished", 0), data.get("position", 0)),
+            )
+            conn.commit()
+        elif action == "subtask_toggle":
+            if data.get("finished"):
+                subtask_cmds.mark_not_done(data["id"])
+            else:
+                subtask_cmds.mark_done(data["id"])
         else:
             success = False
         if success:
