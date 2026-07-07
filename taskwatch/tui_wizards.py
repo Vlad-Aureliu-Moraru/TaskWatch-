@@ -248,6 +248,79 @@ class _WizardMixin:
             self._do_remove(sid)
         self._end_wizard()
 
+    def _do_remove(self, sid: int) -> None:
+        task_data = undo_cmds.get_task_data(sid)
+        if task_data is not None:
+            conn = db_mod.get_conn()
+            notes = conn.execute(
+                "SELECT id, task_id, date, note, file_path, created_at FROM notes WHERE task_id = ?",
+                (sid,),
+            ).fetchall()
+            task_data["notes"] = [dict(n) for n in notes]
+            undo_cmds.push("task_delete", task_data)
+        task_cmds.delete_task(sid)
+        self._refresh_list()
+
+    def _edit_task(self, step: int, value: object) -> None:
+        field_map = {
+            1: "name",
+            2: "description",
+            3: "urgency",
+            4: "difficulty",
+            5: "time_dedicated",
+            6: "deadline",
+            7: "repeatable",
+            8: "repeatable_type",
+            9: "repeat_on_specific_day",
+            10: "has_to_be_completed_to_repeat",
+        }
+        if step in field_map:
+            self._edit_ctx[field_map[step]] = value
+
+        if step == 1:
+            self._start_wizard("Description: ", self._wiz_edit_task_description)
+        elif step == 2:
+            self._start_wizard(
+                f"Urgency 1-5 [default {self._edit_task_defaults.get('urgency', 1)}]: ",
+                self._wiz_edit_task_urgency,
+            )
+        elif step == 3:
+            self._start_wizard(
+                f"Difficulty 1-5 [default {self._edit_task_defaults.get('difficulty', 1)}]: ",
+                self._wiz_edit_task_difficulty,
+            )
+        elif step == 4:
+            self._start_wizard("Time budget minutes: ", self._wiz_edit_task_time)
+        elif step == 5:
+            self._start_wizard("Deadline (dd/MM/yyyy or 'none'): ", self._wiz_edit_task_deadline)
+        elif step == 6:
+            self._start_wizard("Repeatable? y/n: ", self._wiz_edit_repeatable)
+        elif step == 7:
+            if value:
+                self._start_wizard(
+                    "Repeat type daily/weekly/biweekly/monthly/yearly: ",
+                    self._wiz_edit_repeat_type,
+                )
+            else:
+                self._save_edit_task()
+        elif step == 8:
+            if value == "daily":
+                self._start_wizard(
+                    "Auto-repeat on finish? y/n: ",
+                    self._wiz_edit_auto_repeat,
+                )
+            else:
+                self._show_day_picker(
+                    on_select=partial(self._wiz_edit_repeat_day, value),
+                    on_cancel=partial(
+                        self._start_wizard,
+                        "Auto-repeat on finish? y/n: ",
+                        self._wiz_edit_auto_repeat,
+                    ),
+                )
+        elif step in (9, 10):
+            self._save_edit_task()
+
     def _wiz_bulk_delete(self, answer: str) -> None:
         if answer.lower() in ("y", "yes"):
             tids = list(self._bulk_selection)
@@ -286,7 +359,8 @@ class _WizardMixin:
 
     def _wiz_edit_task_name(self, name: str) -> None:
         if not name:
-            self._wiz_edit_task_name
+            self._start_wizard("Task name: ", self._wiz_edit_task_name)
+            return
         self._edit_task(step=1, value=name)
 
     def _wiz_edit_task_description(self, desc: str) -> None:

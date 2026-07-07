@@ -20,6 +20,7 @@ from urwid import (
 from . import task_cmds, timer as timer_mod
 from .paths import DATA_DIR, TIMER_STATE_PATH
 from .tui_helpers import _build_terminal_cmd, _ensure_default_sounds, _play_sound, _SOUND_DIR
+from .tui_widgets import VimListBox
 
 logger = logging.getLogger("taskwatch.tui")
 

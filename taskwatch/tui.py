@@ -77,6 +77,7 @@ from .tui_helpers import (
     _level_color,
     _paste_from_clipboard,
     _play_sound,
+    _BRAILLE_STEPS,
     _render_markdown_to_urwid,
     _solid_bar,
     _vblock_bar,
@@ -121,6 +122,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         self._cmd_history: list[str] = []
         self._cmd_history_index: int = -1
         self._edit_ctx: dict | None = None
+        self._edit_task_defaults: dict = {}
         self._help_overlay = None
         self._global_search_overlay = None
         self._prev_overlay = None
@@ -885,14 +887,6 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
                 getattr(self, method_name)(cmd)
                 return
         self._focus_body()
-        if handler:
-            handler()
-            return
-        for prefix, handler_fn in self._CMD_PREFIX_DISPATCH.items():
-            if cmd.startswith(prefix):
-                handler_fn(cmd)
-                return
-        self._focus_body()
 
     def _cmd_quit(self) -> None:
         raise urwid.ExitMainLoop()
@@ -1400,6 +1394,49 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
                 partial(self._wiz_note_content, today),
             )
 
+    def _cmd_add_with_file(self) -> None:
+        if self._level == Level.NOTES and self._selected_task_id is not None:
+            self._start_wizard(
+                "Note content (leave empty for date-only): ",
+                self._wiz_note_content_with_file,
+            )
+
+    def _cmd_edit(self) -> None:
+        if self._level == Level.TASKS:
+            sid = self._get_selected_id()
+            if sid is not None:
+                task = task_cmds.get_task(sid)
+                if task:
+                    self._edit_ctx = {
+                        "task_id": task.id,
+                        "name": task.name,
+                        "description": task.description,
+                        "urgency": task.urgency,
+                        "difficulty": task.difficulty,
+                        "time_dedicated": task.time_dedicated,
+                        "deadline": task.deadline,
+                        "repeatable": task.repeatable,
+                        "repeatable_type": task.repeatable_type,
+                        "has_to_be_completed_to_repeat": task.has_to_be_completed_to_repeat,
+                        "repeat_on_specific_day": task.repeat_on_specific_day,
+                    }
+                    self._edit_task_defaults = {
+                        "urgency": task.urgency,
+                        "difficulty": task.difficulty,
+                    }
+                    self._start_wizard(
+                        f"Task name [{task.name}]: ",
+                        self._wiz_edit_task_name,
+                    )
+
+    def _cmd_remove(self) -> None:
+        if self._level == Level.TASKS:
+            sid = self._get_selected_id()
+            if sid is not None:
+                self._start_wizard(
+                    f"Delete task {sid}? (y/n): ",
+                    partial(self._wiz_confirm_delete, sid),
+                )
 
     def _save_edit_task(self) -> None:
         ctx = self._edit_ctx

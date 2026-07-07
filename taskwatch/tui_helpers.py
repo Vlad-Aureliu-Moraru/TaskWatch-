@@ -695,3 +695,29 @@ def _render_markdown_to_urwid(text: str) -> list:
             continue
 
         h_match = re.match(r'^(#{1,6})\s+(.+)$', stripped)
+        if h_match:
+            lines.append(_parse_inline_markdown(h_match.group(2), "head"))
+            continue
+
+        if stripped.startswith("> "):
+            lines.append(_parse_inline_markdown(stripped[2:], "dim"))
+            continue
+
+        ul_match = re.match(r'^(\s*)[-*+]\s+(.+)$', line)
+        if ul_match:
+            indent = ul_match.group(1)
+            content = ul_match.group(2)
+            bullet = "  " + indent + "\u2022 "
+            lines.append(_parse_inline_markdown(bullet + content, "default"))
+            continue
+
+        ol_match = re.match(r'^(\s*)\d+\.\s+(.+)$', line)
+        if ol_match:
+            indent = ol_match.group(1)
+            content = ol_match.group(2)
+            lines.append(_parse_inline_markdown("  " + indent + content, "default"))
+            continue
+
+        lines.append(_parse_inline_markdown(line, "default"))
+
+    return lines
