@@ -1,1 +1,5 @@
 urwid>=4.0.0
+
+[dev]
+pytest>=8
+ruff>=0.5

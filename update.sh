@@ -26,7 +26,7 @@ download() {
 
 get_current_version() {
     local v
-    v=$(taskwatch --version 2>/dev/null | sed 's/.*v//')
+    v=$("${HOME}/.local/bin/taskwatch" --version 2>/dev/null | sed 's/.*v//')
     if [ -z "$v" ] && [ -f "$VERSION_FILE" ]; then
         v=$(cat "$VERSION_FILE")
     fi
@@ -89,7 +89,7 @@ if [ ! -d "$EXTRACTED_DIR" ]; then
 fi
 
 echo "Installing..."
-"${EXTRACTED_DIR}/install.sh"
+(cd "$EXTRACTED_DIR" && ./install.sh)
 
 mkdir -p "$(dirname "$VERSION_FILE")"
 echo "$LATEST_VER" > "$VERSION_FILE"

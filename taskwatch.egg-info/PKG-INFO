@@ -4,3 +4,6 @@ Version: 0.1.6
 Summary: A system-integrated task tracker with Waybar support
 Requires-Python: >=3.11
 Requires-Dist: urwid>=4.0.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8; extra == "dev"
+Requires-Dist: ruff>=0.5; extra == "dev"

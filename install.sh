@@ -4,11 +4,15 @@ set -e
 BIN_DIR="${HOME}/.local/bin"
 APP_DIR="${HOME}/.local/share/applications"
 ICON_DIR="${HOME}/.local/share/icons/hicolor/256x256/apps"
+TASKWATCH_DIR="${HOME}/.local/share/taskwatch"
 
-mkdir -p "$BIN_DIR" "$APP_DIR" "$ICON_DIR"
+mkdir -p "$BIN_DIR" "$APP_DIR" "$ICON_DIR" "$TASKWATCH_DIR"
 
 cp taskwatch "$BIN_DIR/"
 chmod +x "$BIN_DIR/taskwatch"
+
+cp update.sh "$TASKWATCH_DIR/"
+chmod +x "$TASKWATCH_DIR/update.sh"
 
 for term in kitty alacritty wezterm gnome-terminal konsole xfce4-terminal foot xterm; do
     if command -v "$term" >/dev/null 2>&1; then
