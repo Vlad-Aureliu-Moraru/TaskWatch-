@@ -543,12 +543,119 @@ def _do_import_note(data: dict, conn, task_id: int) -> str:
     return "Imported 1 note"
 
 
+def _do_merge_import_directory(data: dict, conn, archive_id: int) -> str:
+    d = data.get("directory", {})
+    if not d:
+        return "Import failed: no directory data in file"
+
+    existing = conn.execute(
+        "SELECT id FROM directories WHERE name = ? AND archive_id = ?",
+        (d["name"], archive_id),
+    ).fetchone()
+
+    if existing is None:
+        return _do_import_directory(data, conn, archive_id)
+
+    dir_id = existing["id"]
+    merged = 0
+    created = 0
+    notes_added = 0
+
+    old_to_new_task: dict[int, int] = {}
+
+    for t in data.get("tasks", []):
+        name = t.get("name", "").strip()
+        if not name:
+            continue
+
+        existing_task = conn.execute(
+            "SELECT id FROM tasks WHERE name = ? AND directory_id = ?",
+            (name, dir_id),
+        ).fetchone()
+
+        if existing_task is not None:
+            existing_id = existing_task["id"]
+
+            if t.get("finished"):
+                conn.execute(
+                    "UPDATE tasks SET finished = 1, finished_date = ? WHERE id = ?",
+                    (t.get("finished_date", "none"), existing_id),
+                )
+
+            for n in data.get("notes", []):
+                if n.get("task_id") == t["id"]:
+                    create_note(
+                        task_id=existing_id,
+                        date=n.get("date", date.today().isoformat()),
+                        note=n.get("note", ""),
+                        file_path=n.get("file_path"),
+                    )
+                    notes_added += 1
+
+            for tt in data.get("task_tags", []):
+                if tt.get("task_id") == t["id"]:
+                    tag_name = next(
+                        (tg["name"] for tg in data.get("tags", []) if tg["id"] == tt["tag_id"]),
+                        None,
+                    )
+                    if tag_name:
+                        add_tag_to_task(existing_id, tag_name)
+
+            for s in data.get("subtasks", []):
+                if s.get("task_id") == t["id"]:
+                    conn.execute(
+                        "INSERT INTO subtasks (task_id, content, finished, position) VALUES (?, ?, ?, ?)",
+                        (existing_id, s["content"], s.get("finished", 0), s.get("position", 0)),
+                    )
+
+            merged += 1
+        else:
+            try:
+                task = create_task(
+                    directory_id=dir_id,
+                    name=name,
+                    description=t.get("description", ""),
+                    deadline=t.get("deadline", "none"),
+                    urgency=t.get("urgency", 1),
+                    difficulty=t.get("difficulty", 1),
+                    time_dedicated=t.get("time_dedicated", 0),
+                    repeatable=bool(t.get("repeatable", False)),
+                    repeatable_type=t.get("repeatable_type", "none"),
+                    has_to_be_completed_to_repeat=bool(t.get("has_to_be_completed_to_repeat", True)),
+                    repeat_on_specific_day=t.get("repeat_on_specific_day", "none"),
+                    pinned=bool(t.get("pinned", False)),
+                )
+                old_to_new_task[t["id"]] = task.id
+                if t.get("finished"):
+                    conn.execute(
+                        "UPDATE tasks SET finished = 1, finished_date = ? WHERE id = ?",
+                        (t.get("finished_date", "none"), task.id),
+                    )
+                created += 1
+            except ValueError:
+                pass
+
+    _import_task_children(data, conn, old_to_new_task)
+    conn.commit()
+
+    parts = []
+    if merged:
+        parts.append(f"{merged} merged")
+    if created:
+        parts.append(f"{created} created")
+    if notes_added:
+        parts.append(f"{notes_added} notes added")
+
+    return f"Merged into '{d['name']}' ({', '.join(parts)})"
+
+
 def import_exported_item(
     path: str,
     current_level_name: str,
     archive_id: int | None = None,
     directory_id: int | None = None,
     task_id: int | None = None,
+    merge: bool = False,
 ) -> str:
     try:
         raw = Path(path).read_text()
@@ -567,6 +674,8 @@ def import_exported_item(
         elif export_type == "directory":
             if archive_id is None:
                 return "Navigate into an archive first, then :importExported"
+            if merge:
+                return _do_merge_import_directory(data, conn, archive_id)
             return _do_import_directory(data, conn, archive_id)
         elif export_type == "task":
             if directory_id is None:

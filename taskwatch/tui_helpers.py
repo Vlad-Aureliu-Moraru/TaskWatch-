@@ -122,7 +122,7 @@ COMMANDS = [
     "st", "ts", "timerStop", "pt", "pauseTimer", "rt", "resetTimer",
     "su a", "su d", "sd a", "sd d", "sn a", "sn d", "sdl a", "sdl d", "sr",
     "tag ", "untag ", "ft ", "gs ", "qa ", "mv ", "mu", "md", "all",
-    "export", "exportCurrent", "exportCurrent ", "import ", "importExported ",
+    "export", "exportCurrent", "exportCurrent ", "import ", "importExported ", "importExportedMerge ",
     "importJSON ", "importJSONtaskTemplateCopy", "importJSONnoteTemplateCopy", "overdue", "schbar", "ai", "aii", "highlight",
     "bm", "bd", "bt ", "bv ", "bc", "y", "sound", "sound on", "sound off",
     "sound work ", "sound break ", "sound done ",
@@ -209,6 +209,8 @@ HELP_TEXT = (
     "  :exportCurrent [path] Export current item (archive/dir/task/note) as JSON\n"
     "  :importExported <path> Import file created by :exportCurrent\n"
     "                       (navigate to target archive/dir/task first)\n"
+    "  :importExportedMerge <path> Like :importExported, but merges into existing\n"
+    "                       directory by name (marks done, adds notes/tags)\n"
     "  :importJSON <path>    Import tasks from JSON file into current directory\n"
     "  :importJSONtaskTemplateCopy  Import task from clipboard as JSON template\n"
     "  :importJSONnoteTemplateCopy  Import notes from clipboard as JSON template\n"

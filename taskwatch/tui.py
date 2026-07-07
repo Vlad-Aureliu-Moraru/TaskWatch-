@@ -863,6 +863,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         ("export ", "_cmd_export_path"),
         ("exportCurrent", "_cmd_export_current"),
         ("import ", "_cmd_import"),
+        ("importExportedMerge ", "_cmd_import_exported_merge"),
         ("importExported ", "_cmd_import_exported"),
         ("importJSON ", "_cmd_import_json_path"),
         ("bt ", "_cmd_bulk_tag"),
@@ -1197,6 +1198,20 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
             self._selected_archive_id,
             self._selected_directory_id,
             self._selected_task_id,
+        )
+        ok = "failed" not in result.lower() and "error" not in result.lower()
+        self._set_timed_caption("done" if ok else "error", f"{result} ", 3)
+        self._refresh_list()
+
+    def _cmd_import_exported_merge(self, cmd: str) -> None:
+        path = cmd.split(" ", 1)[1].strip()
+        result = io_cmds.import_exported_item(
+            path,
+            self._level.name,
+            self._selected_archive_id,
+            self._selected_directory_id,
+            self._selected_task_id,
+            merge=True,
         )
         ok = "failed" not in result.lower() and "error" not in result.lower()
         self._set_timed_caption("done" if ok else "error", f"{result} ", 3)
