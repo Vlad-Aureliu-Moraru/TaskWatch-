@@ -442,8 +442,10 @@ class _WizardMixin:
 
     def _wiz_edit_task_name(self, name: str) -> None:
         if not name:
-            self._start_wizard("Task name: ", self._wiz_edit_task_name)
-            return
+            name = self._edit_ctx.get("name", "")
+            if not name:
+                self._start_wizard("Task name: ", self._wiz_edit_task_name)
+                return
         self._edit_task(step=1, value=name)
 
     def _wiz_edit_task_description(self, desc: str) -> None:
