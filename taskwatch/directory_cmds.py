@@ -1,4 +1,7 @@
+import json
 import sqlite3
+import sys
+from pathlib import Path
 
 from .db import get_conn
 from .models import Directory
@@ -83,6 +86,22 @@ def search_directories_global(query: str, limit: int = 10) -> list[Directory]:
         (like, limit),
     ).fetchall()
     return [Directory(id=r["id"], archive_id=r["archive_id"], name=r["name"]) for r in rows]
+
+
+ATTACH_FILENAME = ".taskwatch-directory"
+
+
+def attach_project(directory_path: str, directory_id: int, directory_name: str) -> bool:
+    """Write .taskwatch-directory JSON file at the given path."""
+    target = Path(directory_path) / ATTACH_FILENAME
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        data = {"directory_id": directory_id, "directory_name": directory_name}
+        target.write_text(json.dumps(data, indent=2))
+        return True
+    except (OSError, ValueError) as e:
+        print(f"Error writing {target}: {e}", file=sys.stderr)
+        return False
 
 
 def move_directory(dir_id: int, new_archive_id: int) -> Directory | None:

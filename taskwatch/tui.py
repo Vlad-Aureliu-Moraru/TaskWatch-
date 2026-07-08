@@ -897,6 +897,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         ("st ", "_cmd_start_timer_preset"),
         ("preset ", "_cmd_preset"),
         ("sound ", "_cmd_sound_custom"),
+        ("attachProject ", "_cmd_attach_project"),
     ]
 
     def _handle_command(self, cmd: str) -> None:
@@ -2626,6 +2627,30 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
             urwid.Text(("dim", "p: pause  s: stop  :focus: exit  q: quit"), align="center"),
         ]
         return urwid.Filler(urwid.Pile(lines), valign="middle")
+
+    def _cmd_attach_project(self, cmd: str) -> None:
+        if self._level != Level.DIRECTORIES:
+            self._set_timed_caption("error", "Navigate to a directory first ")
+            return
+        sid = self._get_selected_id()
+        if sid is None:
+            return
+        path = cmd.split(" ", 1)[1].strip() if " " in cmd else ""
+        if not path:
+            self._set_timed_caption("error", "Usage: :attachProject <path> ")
+            return
+        resolved = Path(path).expanduser().resolve()
+        if not resolved.is_dir():
+            self._set_timed_caption("error", f"Path does not exist: {resolved} ")
+            return
+        dir_obj = directory_cmds.get_directory(sid)
+        if dir_obj is None:
+            return
+        ok = directory_cmds.attach_project(str(resolved), dir_obj.id, dir_obj.name)
+        if ok:
+            self._set_timed_caption("done", f"Project attached: {resolved} ")
+        else:
+            self._set_timed_caption("error", "Failed to write .taskwatch-directory ")
 
     def _cmd_toggle_focus(self) -> None:
         if not self._focus_mode:

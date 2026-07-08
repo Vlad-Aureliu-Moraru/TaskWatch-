@@ -128,7 +128,7 @@ COMMANDS = [
     "sound work ", "sound break ", "sound done ",
     "pin", "unpin", "depends ", "undepends ",
     "subadd ", "subrm ", "subdone ", "subedit ",
-    "snooze ", "dup", "standup", "select ", "focus",
+    "snooze ", "dup", "standup", "select ", "focus", "attachProject ",
     "preset ", "preset list", "preset add", "preset remove",
     "update",
 ]
@@ -226,6 +226,8 @@ HELP_TEXT = (
     "  :pt | :pauseTimer     Pause / unpause timer\n"
     "  :rt | :resetTimer     Reset timer\n"
     "  :schbar               Show timer schedule bar\n"
+    "  :attachProject <path>  Attach current directory to a project path\n"
+    "                         (writes .taskwatch-directory for opencode integration)\n"
     "  :focus                Toggle focus mode (big timer, hides list)\n"
     "                         p: pause  s: stop  :focus: exit\n"
     "  :preset list          List timer presets\n"

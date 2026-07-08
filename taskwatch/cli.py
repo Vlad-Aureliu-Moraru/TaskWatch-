@@ -130,6 +130,9 @@ def build_parser() -> argparse.ArgumentParser:
     dr.add_argument("name", help="New name")
     dd = d_sub.add_parser("delete", help="Delete a directory")
     dd.add_argument("id", type=int, help="Directory ID")
+    dp = d_sub.add_parser("attach-project", help="Write .taskwatch-directory to a path")
+    dp.add_argument("id", type=int, help="Directory ID")
+    dp.add_argument("path", help="Filesystem path to attach the project to")
 
     # ── task ──
     t = sub.add_parser("task", help="Manage tasks")
@@ -501,6 +504,20 @@ def _handle_directory(action: str, opts):
             print(f"Deleted directory {opts.id}")
         else:
             print(f"Directory {opts.id} not found", file=sys.stderr)
+            sys.exit(1)
+    elif action == "attach-project":
+        dir_obj = directory_cmds.get_directory(opts.id)
+        if dir_obj is None:
+            print(f"Directory {opts.id} not found", file=sys.stderr)
+            sys.exit(1)
+        resolved = str(Path(opts.path).expanduser().resolve())
+        if not Path(resolved).is_dir():
+            print(f"Path does not exist: {resolved}", file=sys.stderr)
+            sys.exit(1)
+        if directory_cmds.attach_project(resolved, dir_obj.id, dir_obj.name):
+            print(f"Attached directory '{dir_obj.name}' (ID: {dir_obj.id}) to {resolved}")
+        else:
+            print("Failed to write .taskwatch-directory", file=sys.stderr)
             sys.exit(1)
 
 
