@@ -119,7 +119,7 @@ def _validate_repeatable_type(val: str) -> str:
     return val.lower()
 
 
-VALID_ORDER_COLUMNS = {"urgency", "difficulty", "name", "deadline", "id", "time_dedicated"}
+VALID_ORDER_COLUMNS = {"urgency", "difficulty", "name", "deadline", "id", "time_dedicated", "finished_date"}
 
 
 def _order_clause(order_by: str | None, order_dir: str, prefix: str = "") -> str:
@@ -133,7 +133,9 @@ def _order_clause(order_by: str | None, order_dir: str, prefix: str = "") -> str
 def list_tasks(directory_id: int | None = None,
                finished: bool | None = None,
                order_by: str | None = None,
-               order_dir: str = "asc") -> list[Task]:
+               order_dir: str = "asc",
+               finished_after: str | None = None,
+               finished_before: str | None = None) -> list[Task]:
     conn = get_conn()
     conditions = []
     params = []
@@ -143,6 +145,14 @@ def list_tasks(directory_id: int | None = None,
     if finished is not None:
         conditions.append("finished = ?")
         params.append(1 if finished else 0)
+    elif finished_after is not None or finished_before is not None:
+        conditions.append("finished = 1")
+    if finished_after is not None:
+        conditions.append("finished_date >= ?")
+        params.append(finished_after)
+    if finished_before is not None:
+        conditions.append("finished_date <= ?")
+        params.append(finished_before)
 
     where = "WHERE " + " AND ".join(conditions) if conditions else ""
 
@@ -548,6 +558,54 @@ def get_blocked_ids(task_ids: list[int]) -> set[int]:
         for tid, dep_list in deps.items()
         if any(did in unfinished_deps for did in dep_list)
     }
+
+
+def get_dependencies_with_details(task_id: int) -> list[dict]:
+    conn = get_conn()
+    rows = conn.execute(
+        """SELECT td.task_id, t1.name AS task_name, t1.finished AS task_finished,
+                  td.depends_on_task_id, t2.name AS depends_on_task_name,
+                  t2.finished AS depends_on_finished
+           FROM task_dependencies td
+           JOIN tasks t1 ON td.task_id = t1.id
+           JOIN tasks t2 ON td.depends_on_task_id = t2.id
+           WHERE td.task_id = ?""",
+        (task_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_dependents_with_details(task_id: int) -> list[dict]:
+    conn = get_conn()
+    rows = conn.execute(
+        """SELECT td.task_id AS depended_by_task_id,
+                  t1.name AS depended_by_task_name,
+                  t1.finished AS depended_by_finished,
+                  td.depends_on_task_id AS task_id,
+                  t2.name AS task_name,
+                  t2.finished AS task_finished
+           FROM task_dependencies td
+           JOIN tasks t1 ON td.task_id = t1.id
+           JOIN tasks t2 ON td.depends_on_task_id = t2.id
+           WHERE td.depends_on_task_id = ?""",
+        (task_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_dependencies_for_directory(directory_id: int) -> list[dict]:
+    conn = get_conn()
+    rows = conn.execute(
+        """SELECT td.task_id, t1.name AS task_name, t1.finished AS task_finished,
+                  td.depends_on_task_id, t2.name AS depends_on_task_name,
+                  t2.finished AS depends_on_finished
+           FROM task_dependencies td
+           JOIN tasks t1 ON td.task_id = t1.id
+           JOIN tasks t2 ON td.depends_on_task_id = t2.id
+           WHERE t1.directory_id = ?""",
+        (directory_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def get_overdue_tasks() -> list[Task]:

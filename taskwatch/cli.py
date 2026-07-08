@@ -138,8 +138,11 @@ def build_parser() -> argparse.ArgumentParser:
     tl.add_argument("--directory-id", type=int, default=None, help="Filter by directory ID")
     tl.add_argument("--directory-name", default=None, help="Filter by directory name")
     tl.add_argument("--unfinished", action="store_true", help="Show only unfinished tasks")
+    tl.add_argument("--finished", action="store_true", help="Show only finished tasks")
+    tl.add_argument("--finished-after", default=None, help="Filter by finished_date >= (YYYY-MM-DD)")
+    tl.add_argument("--finished-before", default=None, help="Filter by finished_date <= (YYYY-MM-DD)")
     tl.add_argument("--overdue", action="store_true", help="Show only overdue tasks")
-    tl.add_argument("--order-by", default=None, choices=["urgency", "difficulty", "name", "deadline", "id", "time_dedicated"],
+    tl.add_argument("--order-by", default=None, choices=["urgency", "difficulty", "name", "deadline", "id", "time_dedicated", "finished_date"],
                     help="Sort field")
     tl.add_argument("--order-dir", default="asc", choices=["asc", "desc"], help="Sort direction")
     tl.add_argument("--json", action="store_true", help="Output JSON")
@@ -174,6 +177,12 @@ def build_parser() -> argparse.ArgumentParser:
     tu.add_argument("task_id", type=int, help="Task ID")
     tu.add_argument("depends_on_id", type=int,
                     help="task ID to remove dependency from")
+
+    tdeps = t_sub.add_parser("dependencies", help="Show task dependencies")
+    tdeps.add_argument("task_id", type=int, nargs="?", default=None, help="Task ID")
+    tdeps.add_argument("--reverse", action="store_true", help="Show tasks that depend on this one")
+    tdeps.add_argument("--directory-id", type=int, default=None, help="Show all dependencies in a directory")
+    tdeps.add_argument("--json", action="store_true", help="Output JSON")
 
     te = t_sub.add_parser("edit", help="Edit task fields")
     te.add_argument("id", type=int, help="Task ID")
@@ -252,6 +261,10 @@ def build_parser() -> argparse.ArgumentParser:
     tm_sub = tm.add_subparsers(dest="action", required=True)
     tms = tm_sub.add_parser("show", help="Show timer schedule for a task")
     tms.add_argument("task_id", type=int, help="Task ID")
+    tmsess = tm_sub.add_parser("sessions", help="Query timer session history")
+    tmsess.add_argument("--from", dest="from_date", default=None, help="Start date (YYYY-MM-DD)")
+    tmsess.add_argument("--to", dest="to_date", default=None, help="End date (YYYY-MM-DD)")
+    tmsess.add_argument("--json", action="store_true", help="Output JSON")
     tm_sub.add_parser("stop", help="Stop the running timer")
     tm_sub.add_parser("pause", help="Pause/unpause the running timer")
     tmp = tm_sub.add_parser("preset", help="Manage timer presets")
@@ -541,7 +554,13 @@ def _handle_task(action: str, opts):
             print("Use --json for machine-readable output.")
             return
 
-        tasks = task_cmds.list_tasks(directory_id=dir_id, order_by=opts.order_by, order_dir=opts.order_dir)
+        finished_filter = True if opts.finished else (False if opts.unfinished else None)
+        tasks = task_cmds.list_tasks(
+            directory_id=dir_id, finished=finished_filter,
+            order_by=opts.order_by, order_dir=opts.order_dir,
+            finished_after=opts.finished_after,
+            finished_before=opts.finished_before,
+        )
 
         if opts.unfinished:
             tasks = [t for t in tasks if not t.finished]
@@ -567,7 +586,7 @@ def _handle_task(action: str, opts):
                     "urgency": t.urgency, "difficulty": t.difficulty,
                     "repeatable": bool(t.repeatable), "repeatable_type": t.repeatable_type,
                     "pinned": bool(t.pinned), "description": t.description,
-                    "time_dedicated": t.time_dedicated,
+                    "time_dedicated": t.time_dedicated, "finished_date": t.finished_date,
                 }
                 tags = task_cmds.get_tags_for_task_display(t.id)
                 if tags:
@@ -678,6 +697,57 @@ def _handle_task(action: str, opts):
             print(f"Reset {count} overdue repeatable task(s)")
         else:
             print("No overdue repeatable tasks to reset")
+
+    elif action == "dependencies":
+        use_json = getattr(opts, "json", False)
+        if opts.task_id and opts.reverse:
+            edges = task_cmds.get_dependents_with_details(opts.task_id)
+            if use_json:
+                print(json.dumps(edges))
+            else:
+                task = task_cmds.get_task(opts.task_id)
+                name = task.name if task else f"ID:{opts.task_id}"
+                print(f"Task {opts.task_id} ({name}) is depended on by:")
+                if not edges:
+                    print("  (nothing)")
+                for e in edges:
+                    status = "x" if e["depended_by_finished"] else " "
+                    print(f"  [{status}] {e['depended_by_task_id']}: {e['depended_by_task_name']}")
+        elif opts.task_id:
+            edges = task_cmds.get_dependencies_with_details(opts.task_id)
+            if use_json:
+                print(json.dumps(edges))
+            else:
+                task = task_cmds.get_task(opts.task_id)
+                name = task.name if task else f"ID:{opts.task_id}"
+                print(f"Task {opts.task_id} ({name}) depends on:")
+                if not edges:
+                    print("  (nothing)")
+                for e in edges:
+                    status = "x" if e["depends_on_finished"] else " "
+                    print(f"  [{status}] {e['depends_on_task_id']}: {e['depends_on_task_name']}")
+        elif opts.directory_id:
+            edges = task_cmds.get_dependencies_for_directory(opts.directory_id)
+            if use_json:
+                print(json.dumps(edges))
+            else:
+                from collections import defaultdict
+                grouped: dict[int, list[dict]] = defaultdict(list)
+                for e in edges:
+                    grouped[e["task_id"]].append(e)
+                if not grouped:
+                    print("No dependencies in this directory")
+                for tid, deps in grouped.items():
+                    name = deps[0]["task_name"]
+                    print(f"Task {tid} ({name}) depends on:")
+                    for e in deps:
+                        status = "x" if e["depends_on_finished"] else " "
+                        print(f"  [{status}] {e['depends_on_task_id']}: {e['depends_on_task_name']}")
+                    print()
+        else:
+            print("Usage: task dependencies <task_id> [--reverse] | --directory-id <id>",
+                  file=sys.stderr)
+            sys.exit(1)
 
 
 def _batch_done_in_directory(dir_id: int) -> None:
@@ -826,6 +896,25 @@ def _handle_timer(action: str, opts):
             print(f"Task {opts.task_id} not found", file=sys.stderr)
             sys.exit(1)
         print(timer.format_schedule(task))
+    elif action == "sessions":
+        from .timer_sessions import query_sessions
+        sessions = query_sessions(
+            from_date=opts.from_date,
+            to_date=opts.to_date,
+        )
+        use_json = getattr(opts, "json", False)
+        if use_json:
+            print(json.dumps(sessions))
+        else:
+            if not sessions:
+                print("No timer sessions found")
+                return
+            print(f"{'ID':<4} {'Task':<30} {'Duration':<10} {'Date'}")
+            print("-" * 58)
+            for s in sessions:
+                task_label = f"{s['task_id']}: {s['task_name']}" if s['task_id'] else "(deleted task)"
+                dur = f"{s['duration_minutes']}m"
+                print(f"{s['id']:<4} {task_label:<30} {dur:<10} {s['date']}")
     elif action == "stop":
         _timer_stop()
     elif action == "pause":
@@ -1038,13 +1127,15 @@ COMMAND_HELP: dict[str, dict[str, str]] = {
         "description": "Tasks are the core unit of work. They live in directories.",
         "subcommands": {
             "list": {
-                "description": "List tasks, optionally filtered by directory. Use --json for machine-readable output.",
+                "description": "List tasks, optionally filtered by directory, finished status, or date range. Use --json for machine-readable output.",
                 "examples": [
                     "  taskwatch task list",
                     "  taskwatch task list --directory-id 1",
                     "  taskwatch task list --directory-id 1 --json",
                     "  taskwatch task list --directory-name Work",
                     "  taskwatch task list --unfinished",
+                    "  taskwatch task list --finished",
+                    "  taskwatch task list --finished --finished-after 2026-01-01 --finished-before 2026-06-30 --json",
                     "  taskwatch task list --overdue",
                     "  taskwatch task list --order-by deadline --order-dir desc",
                 ],
@@ -1085,6 +1176,16 @@ COMMAND_HELP: dict[str, dict[str, str]] = {
             "undepend": {
                 "description": "Remove a dependency.",
                 "examples": ["  taskwatch task undepend 5 3"],
+            },
+            "dependencies": {
+                "description": "Show task dependencies (forward, reverse, or all in a directory). Use --json for machine-readable output.",
+                "examples": [
+                    "  taskwatch task dependencies 5",
+                    "  taskwatch task dependencies 5 --reverse",
+                    "  taskwatch task dependencies 5 --json",
+                    "  taskwatch task dependencies --directory-id 1",
+                    "  taskwatch task dependencies --directory-id 1 --json",
+                ],
             },
             "move": {
                 "description": "Move a task to a different directory.",
@@ -1181,6 +1282,14 @@ COMMAND_HELP: dict[str, dict[str, str]] = {
             "pause": {
                 "description": "Pause or unpause the running timer.",
                 "examples": ["  taskwatch timer pause"],
+            },
+            "sessions": {
+                "description": "Query timer session history with optional date range. Use --json for machine-readable output.",
+                "examples": [
+                    "  taskwatch timer sessions",
+                    "  taskwatch timer sessions --from 2026-01-01 --to 2026-06-30",
+                    "  taskwatch timer sessions --json",
+                ],
             },
             "preset": {
                 "description": "Manage timer presets (custom work/break durations).",
