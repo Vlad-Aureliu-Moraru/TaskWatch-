@@ -537,8 +537,11 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
 
         elif self._level == Level.DIRECTORIES:
             d = self._current_items[idx]
+            proj = d.project_path if d.project_path else "No attached project"
             lines: list[str | list] = [
-                [("head", f"\uf4d3 {d.name}"), ("dim", f" (id: {d.id})"), "\n\nPress Enter to browse tasks."],
+                [("head", f"\uf4d3 {d.name}"), ("dim", f" (id: {d.id})")],
+                [("c2", f"  Project: {proj}")],
+                ["\nPress Enter to browse tasks."],
             ]
             archive_id = self._selected_archive_id
             announcements = task_cmds.get_announcements(archive_id=archive_id) if archive_id is not None else []
