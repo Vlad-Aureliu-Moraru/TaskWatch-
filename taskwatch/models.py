@@ -12,6 +12,7 @@ class Directory:
     id: int
     archive_id: int
     name: str
+    project_path: str = ""
 
 
 @dataclass

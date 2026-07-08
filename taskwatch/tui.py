@@ -1207,9 +1207,29 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         else:
             self._set_timed_caption("error", "Export failed ", 3)
 
+    def _get_project_path_for_selection(self) -> str | None:
+        dir_id = None
+        if self._level == Level.DIRECTORIES:
+            dir_id = self._get_selected_id()
+        elif self._level == Level.TASKS:
+            sid = self._get_selected_id()
+            if sid is not None:
+                task = task_cmds.get_task(sid)
+                if task:
+                    dir_id = task.directory_id
+        if dir_id is not None:
+            d = directory_cmds.get_directory(dir_id)
+            if d and d.project_path:
+                return d.project_path
+        return None
+
     def _cmd_export_current(self, cmd: str) -> None:
         parts = cmd.split(" ", 1)
         path = parts[1].strip() if len(parts) > 1 else None
+        if not path:
+            pp = self._get_project_path_for_selection()
+            if pp:
+                path = str(Path(pp) / "taskwatch_export_current.json")
         sid = self._get_selected_id()
         if sid is None:
             self._set_timed_caption("error", "Nothing selected ")
@@ -1226,8 +1246,20 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         self._set_timed_caption("done" if "failed" not in result else "error", f"{result} ", 3)
         self._refresh_list()
 
+    def _resolve_import_path(self, cmd: str) -> str | None:
+        parts = cmd.split(" ", 1)
+        if len(parts) > 1 and parts[1].strip():
+            return parts[1].strip()
+        pp = self._get_project_path_for_selection()
+        if pp:
+            return str(Path(pp) / "taskwatch_export_current.json")
+        return None
+
     def _cmd_import_exported(self, cmd: str) -> None:
-        path = cmd.split(" ", 1)[1].strip()
+        path = self._resolve_import_path(cmd)
+        if not path:
+            self._set_timed_caption("error", "Usage: :importExported <path>  (or attach a project first) ")
+            return
         result = io_cmds.import_exported_item(
             path,
             self._level.name,
@@ -1240,7 +1272,10 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         self._refresh_list()
 
     def _cmd_import_exported_merge(self, cmd: str) -> None:
-        path = cmd.split(" ", 1)[1].strip()
+        path = self._resolve_import_path(cmd)
+        if not path:
+            self._set_timed_caption("error", "Usage: :importExportedMerge <path>  (no attach a project directory) ")
+            return
         result = io_cmds.import_exported_item(
             path,
             self._level.name,
