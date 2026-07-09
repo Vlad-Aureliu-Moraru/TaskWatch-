@@ -83,6 +83,12 @@ PALETTE = [
     ("c4", "light red", "default"),
     ("c5", "dark red", "default"),
     ("c6", "light blue", "default"),
+    ("c1_focus", "dark green", "dark blue", "standout"),
+    ("c2_focus", "light green", "dark blue", "standout"),
+    ("c3_focus", "yellow", "dark blue", "standout"),
+    ("c4_focus", "light red", "dark blue", "standout"),
+    ("c5_focus", "dark red", "dark blue", "standout"),
+    ("c6_focus", "light blue", "dark blue", "standout"),
     ("done_dir", "dark blue", "default"),
     ("search_highlight", "black, bold", "yellow"),
 ]

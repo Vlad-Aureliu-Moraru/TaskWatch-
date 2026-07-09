@@ -31,9 +31,26 @@ def _make_list_row(
     left_text: str | list, right_text: str, right_width: int,
     attr: str, focus_attr: str,
 ) -> AttrMap:
+    prefix = Text(("dim", "▸ "), wrap="clip")
     left = SelectableText(left_text, wrap="clip")
-    right = Text(right_text, align="right", wrap="clip")
-    return AttrMap(Columns([("weight", 1, left), (right_width, right)]), attr, focus_attr)
+    cols: list = [("pack", prefix), ("weight", 1, left)]
+    if right_width > 0:
+        right = Text(right_text, align="right", wrap="clip")
+        cols.append((right_width, right))
+    attr_map = {None: attr}
+    focus_map: dict = {
+        None: focus_attr,
+        "default": focus_attr,
+        "dim": focus_attr,
+        "done_dir": focus_attr,
+        "c1": "c1_focus",
+        "c2": "c2_focus",
+        "c3": "c3_focus",
+        "c4": "c4_focus",
+        "c5": "c5_focus",
+        "c6": "c6_focus",
+    }
+    return AttrMap(Columns(cols), attr_map, focus_map)
 
 class CommandEdit(Edit):
     def __init__(self, app: "TaskWatchTUI"):

@@ -174,13 +174,12 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
                         saved = _HIGHLIGHT_ALIASES.get(saved, saved)
                         if saved in {n for n, _ in _HIGHLIGHT_COLORS}:
                             self._highlight_color = saved
-                            for entry in PALETTE:
+                            urwid_bg = dict(_HIGHLIGHT_COLORS).get(saved, "default")
+                            for i, entry in enumerate(PALETTE):
                                 if entry[0] == "focus":
-                                    urwid_bg = dict(_HIGHLIGHT_COLORS).get(saved, "default")
-                                    PALETTE[PALETTE.index(entry)] = (
-                                        entry[0], entry[1], urwid_bg, *entry[3:],
-                                    )
-                                    break
+                                    PALETTE[i] = (entry[0], entry[1], urwid_bg, *entry[3:])
+                                elif len(entry) >= 4 and entry[0].endswith("_focus"):
+                                    PALETTE[i] = (entry[0], entry[1], urwid_bg, *entry[3:])
                     elif line.startswith("SOUND_ENABLED:"):
                         self._sound_enabled = line.split(":", 1)[1].strip().lower() == "true"
                     elif line.startswith("SOUND_WORK:"):
@@ -469,7 +468,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
                     ts_display = n.date
                 clip = "\U0001f4ce " if n.file_path else ""
                 label = f"\U000f039a {n.id}: {clip}{ts_display}"
-                w = AttrMap(SelectableText(label), "default", "focus")
+                w = _make_list_row(label, "", 0, "default", "focus")
                 self._list_walker.append(w)
         if self._level == old_level and self._current_items:
             self._list_box.focus_position = min(old_focus, len(self._current_items) - 1)
@@ -2671,7 +2670,8 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         for i, entry in enumerate(PALETTE):
             if entry[0] == "focus":
                 PALETTE[i] = (entry[0], entry[1], urwid_bg, *entry[3:])
-                break
+            elif len(entry) >= 4 and entry[0].endswith("_focus"):
+                PALETTE[i] = (entry[0], entry[1], urwid_bg, *entry[3:])
         self._loop.widget = self._frame
         self._loop.screen.register_palette(PALETTE)
         self._loop.draw_screen()
