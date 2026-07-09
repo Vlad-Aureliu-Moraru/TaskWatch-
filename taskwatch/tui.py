@@ -75,6 +75,7 @@ from .tui_helpers import (
     _gradient_attr,
     _hblock_bar,
     _level_color,
+    _progress_gradient_attr,
     _paste_from_clipboard,
     _play_sound,
     _BRAILLE_STEPS,
@@ -538,11 +539,16 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         elif self._level == Level.DIRECTORIES:
             d = self._current_items[idx]
             proj = d.project_path if d.project_path else "No attached project"
+            _total, _done = stats_cmds.directory_stats(d.id)
             lines: list[str | list] = [
                 [("head", f"\uf4d3 {d.name}"), ("dim", f" (id: {d.id})")],
-                [("c2", f"  Project: {proj}")],
-                ["\nPress Enter to browse tasks."],
             ]
+            if _total > 0:
+                _pct = round(_done / _total * 100)
+                _fa = _progress_gradient_attr(_pct)
+                lines.append([("", "  "), *_hblock_bar(_pct, 14, fill_attr=_fa)])
+            lines.append([("c2", f"  Project: {proj}")])
+            lines.append(["\nPress Enter to browse tasks."])
             archive_id = self._selected_archive_id
             announcements = task_cmds.get_announcements(archive_id=archive_id) if archive_id is not None else []
             if announcements:

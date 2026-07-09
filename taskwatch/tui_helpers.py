@@ -82,6 +82,7 @@ PALETTE = [
     ("c3", "yellow", "default"),
     ("c4", "light red", "default"),
     ("c5", "dark red", "default"),
+    ("c6", "light blue", "default"),
     ("done_dir", "dark blue", "default"),
     ("search_highlight", "black, bold", "yellow"),
 ]
@@ -409,8 +410,20 @@ def _gradient_attr(pct: int) -> str:
     return "c5"
 
 
-def _hblock_bar(pct: int, width: int, empty_char: str = "\u2591") -> list:
-    fa = _gradient_attr(pct)
+def _progress_gradient_attr(pct: int) -> str:
+    if pct >= 80:
+        return "c6"
+    if pct >= 60:
+        return "c1"
+    if pct >= 40:
+        return "c3"
+    if pct >= 20:
+        return "c4"
+    return "c5"
+
+
+def _hblock_bar(pct: int, width: int, empty_char: str = "\u2591", fill_attr: str | None = None) -> list:
+    fa = fill_attr or _gradient_attr(pct)
     total = width * 8
     filled = int(total * pct / 100)
     full = filled // 8
