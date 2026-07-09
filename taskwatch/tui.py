@@ -2695,6 +2695,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
             return
         ok = directory_cmds.attach_project(str(resolved), dir_obj.id, dir_obj.name)
         if ok:
+            self._show_detail()
             self._set_timed_caption("done", f"Project attached: {resolved} ")
         else:
             self._set_timed_caption("error", "Failed to write .taskwatch-directory ")
