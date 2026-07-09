@@ -70,6 +70,32 @@ def delete_note(note_id: int) -> bool:
     return cur.rowcount > 0
 
 
+def dedup_notes(task_id: int | None = None) -> int:
+    conn = get_conn()
+    where = "WHERE task_id = ?" if task_id is not None else ""
+    params = (task_id,) if task_id is not None else ()
+    groups = conn.execute(
+        f"SELECT task_id, date, note FROM notes {where} "
+        "GROUP BY task_id, date, note HAVING COUNT(*) > 1",
+        params,
+    ).fetchall()
+    deleted = 0
+    for tid, dt, note_text in groups:
+        keep = conn.execute(
+            "SELECT id FROM notes WHERE task_id=? AND date=? AND note=? ORDER BY id LIMIT 1",
+            (tid, dt, note_text),
+        ).fetchone()
+        if keep is None:
+            continue
+        cur = conn.execute(
+            "DELETE FROM notes WHERE task_id=? AND date=? AND note=? AND id != ?",
+            (tid, dt, note_text, keep["id"]),
+        )
+        deleted += cur.rowcount
+    conn.commit()
+    return deleted
+
+
 def update_note(
     note_id: int,
     date: str | None = None,

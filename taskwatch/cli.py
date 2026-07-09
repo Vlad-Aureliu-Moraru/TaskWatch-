@@ -243,6 +243,8 @@ def build_parser() -> argparse.ArgumentParser:
     ne.add_argument("--date", default=None, help="New date")
     ne.add_argument("--note", default=None, help="New content")
     ne.add_argument("--file-path", default=None, help="New file path")
+    ndedup = n_sub.add_parser("dedup", help="Remove duplicate notes (same task_id + date + content)")
+    ndedup.add_argument("--task-id", type=int, default=None, help="Only dedup notes for this task")
 
     # ── subtask ──
     sb = sub.add_parser("subtask", help="Manage subtasks within tasks")
@@ -871,6 +873,13 @@ def _handle_note(action: str, opts):
         else:
             print(f"Note {opts.id} not found", file=sys.stderr)
             sys.exit(1)
+    elif action == "dedup":
+        count = note_cmds.dedup_notes(opts.task_id)
+        scope = f"for task {opts.task_id}" if opts.task_id else "across all tasks"
+        if count:
+            print(f"Deleted {count} duplicate note(s) {scope}")
+        else:
+            print(f"No duplicate notes found {scope}")
 
 
 def _handle_subtask(action: str, opts):
