@@ -148,127 +148,98 @@ CELEBRATION_MESSAGES = [
 ]
 
 
-HELP_TEXT = (
-    "TaskWatch+ Help\n\n"
-    "Navigation:\n"
-    "  \u2191/\u2193        Move selection / scroll detail\n"
-    "  Enter / l    Select / drill in\n"
-    "  ` / h        Go back one level\n"
-    "  Tab         Switch between list and detail pane\n"
-    "  :           Focus command bar\n\n"
-    "Commands (type : then the key):\n"
-    "  :a | :add             Add item at current level\n"
-    "  :at                   Add note with file attachment (Notes level only)\n"
-    "  :r | :remove          Delete selected item (with confirmation)\n"
-    "  :e | :edit            Edit selected item\n"
-    "  :c | :cancel          Cancel command / wizard\n"
-    "  :f | :finish          Toggle task completion\n"
-    "  :shf | :showFinished  Toggle showing finished tasks\n"
-    "  :hf | :hideFinished  Hide finished tasks\n"
-    "  :h | :help            This help\n"
-    "  :q | :exit            Quit\n"
-    "  Tab                   Cycle command completions\n"
-    "  \u2191/\u2193              Recall command history (in command bar)\n"
-    "  Space                 Toggle bulk selection (task list)\n"
-    "  Left click            Select / navigate into item\n"
-    "  Right click           Go back\n\n"
-    "Search:\n"
-    "  /                    Search items in list (type text, Enter to apply, Esc to clear)\n"
-    "  //                   Global fuzzy search (tasks, directories, tags)\n"
-    "  :gs <text>           Global search tasks across all archives\n"
-    "  :all                 Show all tasks in current archive\n\n"
-    "Move:\n"
-    "  :mv <target-id>       Move task to directory / dir to archive\n"
-    "  :mu | :md             Move task up / down (manual order)\n\n"
-    "Quick add:\n"
-    "  :qa <name>            Quick-add task (defaults: u:1 d:1)\n"
-    "                      :qa name u:3 d:2 t:30 for custom values\n\n"
-    "Tags:\n"
-    "  :tag <name>          Add tag to selected task\n"
-    "  :untag <name>        Remove tag from selected task\n"
-    "  :ft <name>           Filter tasks by tag name\n"
-    "  :ftc                 Clear tag filter\n\n"
-    "Bulk (select with Space first):\n"
-    "  :bm                  Mark selected tasks done\n"
-    "  :bd                  Delete selected tasks\n"
-    "  :bt <name>           Tag selected tasks\n"
-    "  :bv <dir-id>         Move selected tasks to directory\n"
-    "  :bc                  Clear selection\n\n"
-    "Stats & View:\n"
-    "  :stats               Show task statistics\n"
-    "  :week                Show tasks grouped by deadline this week\n"
-    "  :overdue             Show overdue tasks\n"
-    "  :ai                  Open opencode with task context\n"
-    "  :aii                 Open integrated AI chat\n"
-    "  :aii connect <p> <k>  Connect an AI provider (groq/gemini/mistral)\n"
-    "  :aii disconnect <p>   Remove an AI provider\n"
-    "  :aii providers        List configured providers\n"
-    "  :highlight           Choose highlight beam color\n\n"
-    "Undo:\n"
-    "  :undo                Undo last delete / edit / finish\n\n"
-    "Export/Import:\n"
-    "  :export [path]        Export all data as JSON\n"
-    "  :import <path>        Import all data from JSON\n"
-    "  :exportCurrent [path] Export current item (archive/dir/task/note) as JSON\n"
-    "                       (auto-writes to project path if :attachProject was used)\n"
-    "  :importExported [path] Import file created by :exportCurrent\n"
-    "                       (navigate to target archive/dir/task first)\n"
-    "                       (auto-detects path if project is attached)\n"
-    "  :importExportedMerge [path] Like :importExported, but merges into existing\n"
-    "                       directory by name (marks done, adds notes/tags)\n"
-    "  :importJSON <path>    Import tasks from JSON file into current directory\n"
-    "  :importJSONtaskTemplateCopy  Import task from clipboard as JSON template\n"
-    "  :importJSONnoteTemplateCopy  Import notes from clipboard as JSON template\n"
-    "  :update              Check for updates and update TaskWatch+\n"
-    "  :y                   Copy selected item to clipboard as JSON\n"
-    "                       (task: details+notes, dir: all tasks, archive: all dirs+tasks)\n"
-    "                       (bulk-select tasks with Space first to copy all selected)\n\n"
-    "Timer:\n"
-    "  :st <minutes|preset>   Start countdown timer (or preset name like \"pomodoro\")\n"
-    "  :ts | :timerStop      Stop timer\n"
-    "  :pt | :pauseTimer     Pause / unpause timer\n"
-    "  :rt | :resetTimer     Reset timer\n"
-    "  :schbar               Show timer schedule bar\n"
-    "  :attachProject <path>  Attach current directory to a project path\n"
-    "                         (writes .taskwatch-directory + enables auto path\n"
-    "                          for :exportCurrent and :importExported)\n"
-    "  :focus                Toggle focus mode (big timer, hides list)\n"
-    "                         p: pause  s: stop  :focus: exit\n"
-    "  :preset list          List timer presets\n"
-    "  :preset add <n> <p> <w> <b> <l>  Add preset (times: 30m, 15s, 1h, 1h30m)\n"
-    "  :preset remove <n>    Remove preset\n"
-    "  :snooze <days>        Postpone selected task's deadline by N days\n"
-    "  :dup                  Duplicate selected task\n\n"
-    "Pinning & Dependencies:\n"
-    "  :pin                  Pin selected task to top\n"
-    "  :unpin                Unpin selected task\n"
-    "  :depends <id>         Selected task depends on task <id>\n"
-    "  :undepends <id>       Remove dependency on task <id>\n\n"
-    "Subtasks:\n"
-    "  :subadd <content>     Add subtask to selected task\n"
-    "  :subrm <#>            Delete the Nth subtask\n"
-    "  :subdone <#>          Toggle the Nth subtask\n"
-    "  :subedit <#> <text>   Edit the Nth subtask's content\n\n"
-    "Bulk Smart Select:\n"
-    "  :select overdue        Select all overdue tasks\n"
-    "  :select due today      Select all tasks due today\n"
-    "  :select pinned         Select all pinned tasks\n\n"
-    "Standup:\n"
-    "  :standup              Show yesterday's completed tasks as markdown\n\n"
-    "Sound:\n"
-    "  :sound               Toggle timer sounds on/off\n"
-    "  :sound on | :sound off  Explicit enable/disable\n"
-    "  :sound work <path>    Set custom work-end sound file\n"
-    "  :sound break <path>   Set custom break-end sound file\n"
-    "  :sound done <path>    Set custom timer-done sound file\n\n"
-    "Sort (task list only):\n"
-    "  :su a | :su d         Sort by urgency asc / desc\n"
-    "  :sd a | :sd d         Sort by difficulty asc / desc\n"
-    "  :sn a | :sn d         Sort by name asc / desc\n"
-    "  :sdl a | :sdl d       Sort by deadline asc / desc\n"
-    "  :sr                   Reset to default order\n\n"
-    "Press any key to close."
-)
+HELP_ENTRIES: list[tuple[str, str, str]] = [
+    ("Navigation", "↑/↓", "Move selection / scroll detail"),
+    ("Navigation", "Enter / l", "Select / drill in"),
+    ("Navigation", "` / h", "Go back one level"),
+    ("Navigation", "Tab", "Switch between list and detail pane"),
+    ("Navigation", ":", "Focus command bar"),
+    ("Commands", ":a | :add", "Add item at current level"),
+    ("Commands", ":at", "Add note with file attachment (Notes level only)"),
+    ("Commands", ":r | :remove", "Delete selected item (with confirmation)"),
+    ("Commands", ":e | :edit", "Edit selected item"),
+    ("Commands", ":c | :cancel", "Cancel command / wizard"),
+    ("Commands", ":f | :finish", "Toggle task completion"),
+    ("Commands", ":shf | :showFinished", "Toggle showing finished tasks"),
+    ("Commands", ":hf | :hideFinished", "Hide finished tasks"),
+    ("Commands", ":h | :help", "This help"),
+    ("Commands", ":q | :exit", "Quit"),
+    ("Commands", "Tab", "Cycle command completions"),
+    ("Commands", "↑/↓", "Recall command history (in command bar)"),
+    ("Commands", "Space", "Toggle bulk selection (task list)"),
+    ("Commands", "Left click", "Select / navigate into item"),
+    ("Commands", "Right click", "Go back"),
+    ("Search", "/", "Search items in list (type text, Enter to apply, Esc to clear)"),
+    ("Search", "//", "Global fuzzy search (tasks, directories, tags)"),
+    ("Search", ":gs <text>", "Global search tasks across all archives"),
+    ("Search", ":all", "Show all tasks in current archive"),
+    ("Move", ":mv <target-id>", "Move task to directory / dir to archive"),
+    ("Move", ":mu | :md", "Move task up / down (manual order)"),
+    ("Quick add", ":qa <name>", "Quick-add task (defaults u:1 d:1; add u:3 d:2 t:30 for custom values)"),
+    ("Tags", ":tag <name>", "Add tag to selected task"),
+    ("Tags", ":untag <name>", "Remove tag from selected task"),
+    ("Tags", ":ft <name>", "Filter tasks by tag name"),
+    ("Tags", ":ftc", "Clear tag filter"),
+    ("Bulk", ":bm", "Mark selected tasks done"),
+    ("Bulk", ":bd", "Delete selected tasks"),
+    ("Bulk", ":bt <name>", "Tag selected tasks"),
+    ("Bulk", ":bv <dir-id>", "Move selected tasks to directory"),
+    ("Bulk", ":bc", "Clear selection"),
+    ("Stats & View", ":stats", "Show task statistics"),
+    ("Stats & View", ":week", "Show tasks grouped by deadline this week"),
+    ("Stats & View", ":overdue", "Show overdue tasks"),
+    ("Stats & View", ":ai", "Open opencode with task context"),
+    ("Stats & View", ":aii", "Open integrated AI chat"),
+    ("Stats & View", ":aii connect <p> <k>", "Connect an AI provider (groq/gemini/mistral)"),
+    ("Stats & View", ":aii disconnect <p>", "Remove an AI provider"),
+    ("Stats & View", ":aii providers", "List configured providers"),
+    ("Stats & View", ":highlight", "Choose highlight beam color"),
+    ("Undo", ":undo", "Undo last delete / edit / finish"),
+    ("Export/Import", ":export [path]", "Export all data as JSON"),
+    ("Export/Import", ":import <path>", "Import all data from JSON"),
+    ("Export/Import", ":exportCurrent [path]", "Export current item (archive/dir/task/note) as JSON (auto-writes to project path if :attachProject was used)"),
+    ("Export/Import", ":importExported [path]", "Import file created by :exportCurrent (navigate to target first; auto-detects path if project is attached)"),
+    ("Export/Import", ":importExportedMerge [path]", "Like :importExported, but merges into existing directory by name (marks done, adds notes/tags)"),
+    ("Export/Import", ":importJSON <path>", "Import tasks from JSON file into current directory"),
+    ("Export/Import", ":importJSONtaskTemplateCopy", "Import task from clipboard as JSON template"),
+    ("Export/Import", ":importJSONnoteTemplateCopy", "Import notes from clipboard as JSON template"),
+    ("Export/Import", ":update", "Check for updates and update TaskWatch+"),
+    ("Export/Import", ":y", "Copy selected item to clipboard as JSON (task: details+notes, dir: all tasks, archive: all dirs+tasks; bulk-select with Space to copy all)"),
+    ("Timer", ":st <minutes|preset>", "Start countdown timer (or preset name like 'pomodoro')"),
+    ("Timer", ":ts | :timerStop", "Stop timer"),
+    ("Timer", ":pt | :pauseTimer", "Pause / unpause timer"),
+    ("Timer", ":rt | :resetTimer", "Reset timer"),
+    ("Timer", ":schbar", "Show timer schedule bar"),
+    ("Timer", ":attachProject <path>", "Attach current directory to a project path (writes .taskwatch-directory + enables auto path for :exportCurrent/:importExported)"),
+    ("Timer", ":focus", "Toggle focus mode (big timer, hides list); p: pause, s: stop, :focus: exit"),
+    ("Timer", ":preset list", "List timer presets"),
+    ("Timer", ":preset add <n> <p> <w> <b> <l>", "Add preset (times: 30m, 15s, 1h, 1h30m)"),
+    ("Timer", ":preset remove <n>", "Remove preset"),
+    ("Timer", ":snooze <days>", "Postpone selected task's deadline by N days"),
+    ("Timer", ":dup", "Duplicate selected task"),
+    ("Pinning", ":pin", "Pin selected task to top"),
+    ("Pinning", ":unpin", "Unpin selected task"),
+    ("Pinning", ":depends <id>", "Selected task depends on task <id>"),
+    ("Pinning", ":undepends <id>", "Remove dependency on task <id>"),
+    ("Subtasks", ":subadd <content>", "Add subtask to selected task"),
+    ("Subtasks", ":subrm <#>", "Delete the Nth subtask"),
+    ("Subtasks", ":subdone <#>", "Toggle the Nth subtask"),
+    ("Subtasks", ":subedit <#> <text>", "Edit the Nth subtask's content"),
+    ("Bulk Smart Select", ":select overdue", "Select all overdue tasks"),
+    ("Bulk Smart Select", ":select due today", "Select all tasks due today"),
+    ("Bulk Smart Select", ":select pinned", "Select all pinned tasks"),
+    ("Standup", ":standup", "Show yesterday's completed tasks as markdown"),
+    ("Sound", ":sound", "Toggle timer sounds on/off"),
+    ("Sound", ":sound on | :sound off", "Explicit enable / disable"),
+    ("Sound", ":sound work <path>", "Set custom work-end sound file"),
+    ("Sound", ":sound break <path>", "Set custom break-end sound file"),
+    ("Sound", ":sound done <path>", "Set custom timer-done sound file"),
+    ("Sort", ":su a | :su d", "Sort by urgency asc / desc"),
+    ("Sort", ":sd a | :sd d", "Sort by difficulty asc / desc"),
+    ("Sort", ":sn a | :sn d", "Sort by name asc / desc"),
+    ("Sort", ":sdl a | :sdl d", "Sort by deadline asc / desc"),
+    ("Sort", ":sr", "Reset to default order"),
+]
 
 def _copy_to_clipboard(text: str) -> bool:
     data = text.encode()

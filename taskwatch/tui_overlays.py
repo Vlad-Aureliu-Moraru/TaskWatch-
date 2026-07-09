@@ -29,6 +29,7 @@ from . import (
     task_cmds,
 )
 from .tui_helpers import (
+    HELP_ENTRIES,
     _build_highlighted_text,
     _fuzzy_score,
     _paste_from_clipboard,
@@ -180,6 +181,96 @@ class GlobalSearchOverlay(WidgetWrap):
                 if hasattr(w, 'result_data'):
                     self._app._navigate_from_search(w.result_data)
             return None
+        return super().keypress(size, key)
+
+
+class HelpSearchOverlay(WidgetWrap):
+    def __init__(self, app: "TaskWatchTUI"):
+        self._app = app
+        self._edit = Edit("")
+        self._edit.set_caption(("head", "  Search help  "))
+        self._walker = SimpleFocusListWalker([])
+        self._listbox = VimListBox(self._walker)
+        urwid.connect_signal(self._edit, 'change', self._on_change)
+        pile = Pile([
+            ("pack", AttrMap(self._edit, "head")),
+            ("weight", 1, self._listbox),
+        ])
+        self._expanded: set[str] = set(c for c, _, _ in HELP_ENTRIES)
+        self._current_query = ""
+        super().__init__(LineBox(pile, title="Help"))
+        self._run_search("")
+
+    def _on_change(self, edit: Edit, text: str) -> None:
+        self._current_query = text
+        self._run_search(text)
+
+    def _rebuild_help(self) -> None:
+        self._run_search(self._current_query)
+
+    def _run_search(self, query: str) -> None:
+        self._walker.clear()
+        q = query.strip().lower()
+        results_by_cat: dict[str, list[tuple[int, urwid.Widget]]] = {}
+        for cat, cmd, desc in HELP_ENTRIES:
+            combined = f"{cmd} {desc}".lower()
+            if q and q not in combined and _fuzzy_score(q, combined)[0] == 0:
+                continue
+            score = _fuzzy_score(q, cmd + " " + desc)[0] if q else 100
+            label = f"  {cmd:<30} {desc}"
+            if q:
+                highlighted = _build_highlighted_text(label, q)
+            else:
+                highlighted = [("default", label)]
+            w = AttrMap(SelectableText(highlighted), "default", "focus")
+            results_by_cat.setdefault(cat, []).append((score, w))
+        is_search = bool(q)
+        for cat, items in sorted(results_by_cat.items()):
+            if not items:
+                continue
+            expanded = is_search or cat in self._expanded
+            toggle_char = "\u25bc" if expanded else "\u25b6"
+            header_text = f"  {toggle_char} {cat}"
+            hw = AttrMap(SelectableText([("head", header_text)]), "default", "focus")
+            hw.is_header = True
+            hw.category_name = cat
+            self._walker.append(hw)
+            if expanded:
+                sorted_items = sorted(items, key=lambda x: (-x[0], x[1].original_widget.get_text()[0] if hasattr(x[1].original_widget, 'get_text') else ""))
+                for i, (score, w) in enumerate(sorted_items):
+                    prefix = "\u2514" if i == len(sorted_items) - 1 else "\u251c"
+                    orig_text = w.original_widget.get_text()[0] if hasattr(w.original_widget, 'get_text') else ""
+                    new_label = f"\u2502 {prefix}\u2500\u2500{orig_text[3:]}" if orig_text.startswith("  ") else f"\u2502 {prefix}\u2500\u2500{orig_text}"
+                    if q:
+                        new_highlighted = _build_highlighted_text(new_label, q)
+                    else:
+                        new_highlighted = [("default", new_label)]
+                    tree_w = AttrMap(SelectableText(new_highlighted), "default", "focus")
+                    tree_w.is_header = False
+                    self._walker.append(tree_w)
+        if self._walker:
+            self._listbox.focus_position = 0
+        elif q:
+            self._walker.append(Text([("error", "  No matching help entries")]))
+
+    def keypress(self, size: tuple[int, int], key: str) -> str | None:
+        if key == "?":
+            return None
+        if key in ("esc", "q"):
+            self._app._close_help()
+            return None
+        if key == "enter" and self._walker:
+            idx = self._listbox.focus_position
+            if idx < len(self._walker):
+                w = self._walker[idx]
+                if hasattr(w, 'is_header') and w.is_header:
+                    cat = w.category_name
+                    if cat in self._expanded:
+                        self._expanded.discard(cat)
+                    else:
+                        self._expanded.add(cat)
+                    self._rebuild_help()
+                    return None
         return super().keypress(size, key)
 
 

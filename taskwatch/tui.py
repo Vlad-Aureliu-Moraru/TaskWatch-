@@ -57,7 +57,6 @@ from .paths import CONFIG_PATH, DATA_DIR, TIMER_STATE_PATH
 from .tui_helpers import (
     CELEBRATION_MESSAGES,
     COMMANDS,
-    HELP_TEXT,
     PALETTE,
     _HIGHLIGHT_ALIASES,
     _HIGHLIGHT_COLORS,
@@ -89,6 +88,7 @@ from .tui_wizards import _WizardMixin
 from .tui_overlays import (
     FilePickerWidget,
     GlobalSearchOverlay,
+    HelpSearchOverlay,
     ImportJSONOverlay,
 )
 from .tui_widgets import (
@@ -885,6 +885,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         "sr": "_cmd_sort_reset",
         "ftc": "_cmd_filter_tag_clear",
         "focus": "_cmd_toggle_focus",
+        "dedupn": "_cmd_note_dedup",
     }
 
     _CMD_PREFIX_DISPATCH: list[tuple[str, str]] = [
@@ -1612,6 +1613,16 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
                 partial(self._wiz_confirm_delete_note, sid),
             )
 
+    def _cmd_note_dedup(self) -> None:
+        if self._level != Level.NOTES or self._selected_task_id is None:
+            self._set_timed_caption("error", "Not in notes view ")
+            return
+        count = note_cmds.dedup_notes(self._selected_task_id)
+        if count:
+            self._set_timed_caption("done", f"Deleted {count} duplicate note(s) ")
+        else:
+            self._set_timed_caption("info", "No duplicate notes found ")
+
     def _save_edit_task(self) -> None:
         ctx = self._edit_ctx
         old_task = task_cmds.get_task(ctx["task_id"])
@@ -1819,7 +1830,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
             ctx_lines.append("TaskWatch+ Help\n")
             if self._global_search_overlay is not None:
                 ctx_lines.append("Global Search:\n")
-                ctx_lines.append("  ↑/↓          Navigate results\n")
+                ctx_lines.append("  \u2191/\u2193          Navigate results\n")
                 ctx_lines.append("  Enter        Jump to result\n")
                 ctx_lines.append("  Esc          Close search\n")
                 ctx_lines.append("  ?            This help\n")
@@ -1835,9 +1846,9 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
             self._loop.widget = self._help_overlay
             return
 
-        help_w = LineBox(VimListBox(SimpleFocusListWalker([SelectableText(HELP_TEXT)])))
+        overlay = HelpSearchOverlay(self)
         self._help_overlay = Overlay(
-            help_w,
+            overlay,
             self._frame,
             align="center",
             width=("relative", 80),
@@ -1845,6 +1856,10 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
             height=("relative", 80),
         )
         self._loop.widget = self._help_overlay
+
+    def _close_help(self) -> None:
+        self._help_overlay = None
+        self._loop.widget = self._frame
 
     def _show_stats(self) -> None:
         import shutil
