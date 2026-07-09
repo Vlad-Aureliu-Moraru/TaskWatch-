@@ -422,16 +422,11 @@ def _progress_gradient_attr(pct: int) -> str:
     return "c5"
 
 
-def _hblock_bar(pct: int, width: int, empty_char: str = "\u2591", fill_attr: str | None = None) -> list:
+def _hblock_bar(pct: int, width: int, empty_char: str = "\u25a1", fill_attr: str | None = None) -> list:
     fa = fill_attr or _gradient_attr(pct)
-    total = width * 8
-    filled = int(total * pct / 100)
-    full = filled // 8
-    rem = filled % 8
-    empty = width - full - (1 if rem else 0)
-    parts: list = [(fa, "\u2588" * full)]
-    if rem:
-        parts.append((fa, _HBLOCK_STEPS[rem]))
+    filled = round(width * pct / 100)
+    empty = width - filled
+    parts: list = [(fa, "\u25a0" * filled)]
     if empty > 0:
         parts.append(("bar_e", empty_char * empty))
     return parts
