@@ -97,7 +97,6 @@ class CommandEdit(Edit):
             self._app._focus_body()
             return None
         if key == "backspace" and self._app._prompt_handler and not self.get_edit_text():
-            self._app._wizard_back()
             return None
         if self._app._tab_matches:
             self._app._tab_matches = []
