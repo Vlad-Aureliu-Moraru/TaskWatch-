@@ -10,4 +10,6 @@ AI_CONFIG_PATH = DATA_DIR / "ai_config.json"
 CALCURSE_DIR = Path.home() / ".local" / "share" / "calcurse"
 APTS_FILE = CALCURSE_DIR / "apts"
 
+SERVER_TOKEN_PATH = DATA_DIR / "server_token.json"
+
 INACTIVE_TIMER_DATA: dict[str, str] = {"text": "", "class": "inactive"}

@@ -2,6 +2,7 @@ import argparse
 import json
 import sys
 import textwrap
+from pathlib import Path
 
 from . import (
     __version__,
@@ -51,6 +52,7 @@ CATEGORY_DESCRIPTIONS = {
     "export":    "Export all data to JSON",
     "import":    "Import data from JSON",
     "tui":       "Launch the terminal user interface",
+    "serve":     "Start the HTTP server for phone/remote access",
     "waybar":    "Output JSON for Waybar timer display (for status bars)",
     "stats":     "Show statistics overview or per-directory stats",
     "ai":        "AI assistant integration (chat, ask, suggest tasks)",
@@ -79,7 +81,7 @@ def print_global_help(prog: str) -> None:
         ("Timer", ["timer"]),
         ("AI", ["ai"]),
         ("Data", ["export", "import"]),
-        ("Interface", ["tui", "waybar"]),
+        ("Interface", ["tui", "serve", "waybar"]),
         ("Help", ["help"]),
     ]
     for cat_name, cmds in categories:
@@ -310,6 +312,11 @@ def build_parser() -> argparse.ArgumentParser:
     # ── tui ──
     sub.add_parser("tui", help="Launch the terminal user interface")
 
+    # ── serve ──
+    sv = sub.add_parser("serve", help="Start the HTTP server for phone/remote access")
+    sv.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
+    sv.add_argument("--port", type=int, default=8080, help="Port (default: 8080)")
+
     # ── daemon (hidden) ──
     sub.add_parser("daemon", help=argparse.SUPPRESS)
 
@@ -380,6 +387,11 @@ def run(args: list[str] | None = None):
 
     if entity == "waybar":
         _handle_waybar()
+        return
+
+    if entity == "serve":
+        from .server import run_server
+        run_server(host=opts.host, port=opts.port)
         return
 
     if entity == "export":

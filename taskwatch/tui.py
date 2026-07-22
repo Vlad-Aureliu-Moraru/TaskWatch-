@@ -913,6 +913,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         "focus": "_cmd_toggle_focus",
         "dedupn": "_cmd_note_dedup",
         "recalculateLevel": "_cmd_recalculate_level",
+        "serve": "_cmd_serve",
     }
 
     _CMD_PREFIX_DISPATCH: list[tuple[str, str]] = [
@@ -943,6 +944,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         ("preset ", "_cmd_preset"),
         ("sound ", "_cmd_sound_custom"),
         ("attachProject ", "_cmd_attach_project"),
+        ("serve ", "_cmd_serve_subcmd"),
     ]
 
     def _handle_command(self, cmd: str) -> None:
@@ -2758,6 +2760,40 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
             self._set_timed_caption("done", f"Project attached: {resolved} ")
         else:
             self._set_timed_caption("error", "Failed to write .taskwatch-directory ")
+
+    def _cmd_serve(self) -> None:
+        host = "0.0.0.0"
+        port = 8080
+        self._set_timed_caption("done", f"Starting server on *:{port}... ")
+        from .server import get_url
+        url = get_url(host, port)
+        self._server_running = True
+        self._server_thread = threading.Thread(
+            target=self._run_server_thread,
+            args=(host, port),
+            daemon=True,
+        )
+        self._server_thread.start()
+        self._set_timed_caption("done", f"Server: {url} ")
+
+    def _run_server_thread(self, host: str, port: int) -> None:
+        from .server import run_server
+        run_server(host=host, port=port)
+
+    def _cmd_serve_subcmd(self, cmd: str) -> None:
+        parts = cmd.strip().split(maxsplit=1)
+        sub = parts[1] if len(parts) > 1 else ""
+        if sub == "stop":
+            self._set_timed_caption("error", "Use Ctrl+C to stop the process. Daemon restart coming in Stage 3.")
+        elif sub == "status":
+            running = getattr(self, "_server_running", False) and getattr(self, "_server_thread", None) and self._server_thread.is_alive()
+            if running:
+                from .server import get_url
+                self._set_timed_caption("done", f"Server running — {get_url('0.0.0.0', 8080)} ")
+            else:
+                self._set_timed_caption("error", "Server not running ")
+        else:
+            self._set_timed_caption("error", "Usage: :serve stop | :serve status ")
 
     def _cmd_toggle_focus(self) -> None:
         if not self._focus_mode:

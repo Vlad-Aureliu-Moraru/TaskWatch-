@@ -152,6 +152,7 @@ COMMANDS = [
     "snooze ", "dup", "standup", "select ", "focus", "attachProject ",
     "preset ", "preset list", "preset add", "preset remove",
     "update", "recalculateLevel",
+    "serve", "serve stop", "serve status",
 ]
 
 CELEBRATION_MESSAGES = [
