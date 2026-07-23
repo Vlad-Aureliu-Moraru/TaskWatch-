@@ -1,9 +1,11 @@
 Metadata-Version: 2.4
 Name: taskwatch
-Version: 0.1.6
+Version: 0.3.9
 Summary: A system-integrated task tracker with Waybar support
 Requires-Python: >=3.11
 Requires-Dist: urwid>=4.0.0
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: uvicorn>=0.34.0
 Provides-Extra: dev
 Requires-Dist: pytest>=8; extra == "dev"
 Requires-Dist: ruff>=0.5; extra == "dev"

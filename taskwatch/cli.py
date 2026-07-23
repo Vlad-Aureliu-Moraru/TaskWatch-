@@ -55,6 +55,7 @@ CATEGORY_DESCRIPTIONS = {
     "serve":     "Start the HTTP server for phone/remote access",
     "waybar":    "Output JSON for Waybar timer display (for status bars)",
     "stats":     "Show statistics overview or per-directory stats",
+    "review":    "Show a comprehensive review (overdue, due soon, completed)",
     "ai":        "AI assistant integration (chat, ask, suggest tasks)",
     "help":      "Show detailed help for a specific command",
 }
@@ -77,7 +78,7 @@ def print_global_help(prog: str) -> None:
     categories = [
         ("Core", ["archive", "directory", "task"]),
         ("Task Details", ["note", "subtask", "tag"]),
-        ("Statistics", ["stats"]),
+        ("Statistics", ["stats", "review"]),
         ("Timer", ["timer"]),
         ("AI", ["ai"]),
         ("Data", ["export", "import"]),
@@ -354,6 +355,10 @@ def build_parser() -> argparse.ArgumentParser:
     st_dirs = st_sub.add_parser("directories", help="Show stats for all directories")
     st_dirs.add_argument("--json", action="store_true", help="Output JSON")
 
+    # ── review ──
+    rv = sub.add_parser("review", help="Show a comprehensive review overview")
+    rv.add_argument("--json", action="store_true", help="Output JSON")
+
     return parser
 
 
@@ -403,6 +408,10 @@ def run(args: list[str] | None = None):
 
     if entity == "help":
         _handle_help(opts, parser)
+        return
+
+    if entity == "review":
+        _handle_review(opts)
         return
 
     action = opts.action
@@ -1094,6 +1103,66 @@ def _handle_tag(action: str, opts):
             print("No tasks with that tag")
 
 
+def _handle_review(opts):
+    from . import review_cmds
+    from datetime import date
+
+    data = review_cmds.get_review_data()
+    use_json = getattr(opts, "json", False)
+
+    if use_json:
+        import json
+        print(json.dumps(data, default=str))
+        return
+
+    today = date.today()
+    comp_pct = round((data["finished"] / data["total"] * 100) if data["total"] else 0)
+    print(f"\x1b[1mReview \u2014 {today.strftime('%A, %d/%m/%Y')}\x1b[0m")
+    print(f"  Tasks: {data['total']}  |  Done: {data['finished']}/{data['total']} ({comp_pct}%)  |  Pending: {data['pending']}")
+    print(f"  Timer today: {data['timer_minutes_today']}m")
+    print()
+
+    overdue = data["overdue"]
+    if overdue:
+        print(f"\x1b[31m\u26a0 Overdue ({len(overdue)})\x1b[0m")
+        for r in overdue:
+            print(f"  \u26a0 {r['name']}  ({r['arch_name']} \u25b8 {r['dir_name']})  [was due {r['deadline']}]")
+        print()
+
+    due_today = data["due_today"]
+    if due_today:
+        print(f"\U0001f504 Due today ({len(due_today)})")
+        for r in due_today:
+            print(f"  \U0001f504 {r['name']}  ({r['arch_name']} \u25b8 {r['dir_name']})")
+        print()
+
+    due_tomorrow = data["due_tomorrow"]
+    if due_tomorrow:
+        print(f"\U0001f4c5 Due tomorrow ({len(due_tomorrow)})")
+        for r in due_tomorrow:
+            print(f"  \U0001f4c5 {r['name']}  ({r['arch_name']} \u25b8 {r['dir_name']})")
+        print()
+
+    completed_today = data["completed_today"]
+    if completed_today:
+        print(f"\u2713 Completed today ({len(completed_today)})")
+        for r in completed_today:
+            print(f"  \u2713 {r['name']}  ({r['arch_name']} \u25b8 {r['dir_name']})")
+        print()
+
+    completed_week = data["completed_this_week"]
+    if completed_week:
+        print(f"\u2713 Completed this week ({len(completed_week)})")
+        for r in completed_week[:5]:
+            print(f"  \u2713 {r['name']}  ({r['arch_name']} \u25b8 {r['dir_name']})  [{r['finished_date']}]")
+        if len(completed_week) > 5:
+            print(f"  ... and {len(completed_week) - 5} more")
+        print()
+
+    if not any([overdue, due_today, due_tomorrow, completed_today]):
+        print("  \u2014 Nothing urgent. You're on top of things! \U0001f389")
+
+
 def _handle_stats(action: str | None, opts):
     use_json = getattr(opts, "json", False)
 
@@ -1428,6 +1497,13 @@ COMMAND_HELP: dict[str, dict[str, str]] = {
             "  taskwatch stats --json",
             "  taskwatch stats directories",
             "  taskwatch stats directory 1",
+        ],
+    },
+    "review": {
+        "description": "Show a comprehensive review overview: overdue tasks, tasks due today/tomorrow, completed tasks today and this week, and key stats. Use --json for machine-readable output.",
+        "examples": [
+            "  taskwatch review",
+            "  taskwatch review --json",
         ],
     },
 }

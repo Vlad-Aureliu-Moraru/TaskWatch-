@@ -1,18 +1,22 @@
 # ruff: noqa: E501
 import asyncio
+import fcntl
 import json
 import os
+import pty
 import secrets
+import signal
+import struct
 import subprocess
-import tempfile
-from pathlib import Path
+import termios
+import threading
 
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 
 from . import archive_cmds, directory_cmds, note_cmds, stats_cmds, task_cmds
 from .paths import SERVER_TOKEN_PATH
-from .tui_helpers import _build_terminal_cmd, _detect_terminal, _find_opencode
+from .tui_helpers import _find_opencode
 
 app = FastAPI(title="TaskWatch+")
 
@@ -44,82 +48,89 @@ def _verify_token(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Invalid or missing token")
 
 
-_sessions: dict[str, "TerminalSession"] = {}
+_sessions: dict[str, "PTYSession"] = {}
 
 
-class TerminalSession:
+class PTYSession:
     def __init__(self, name: str):
         self.name = name
         self._running = True
-        self.output_file = f"/tmp/{name}.out"
-        self._read_pos = 0
+        self._master_fd = None
+        self._child_pid = None
 
-    def start(self, cmd: str, open_terminal: bool = False):
-        open(self.output_file, "w").close()
-        subprocess.run(
-            ["tmux", "new-session", "-d", "-s", self.name, "sh", "-c", cmd],
-            capture_output=True, timeout=5,
-        )
-        subprocess.Popen(
-            ["tmux", "pipe-pane", "-t", self.name, f"cat >> {self.output_file}"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        if open_terminal:
-            terminal = _detect_terminal()
-            if terminal:
-                attach_cmd = _build_terminal_cmd(
-                    terminal, f"tmux attach-session -t {self.name}"
-                )
-                subprocess.Popen(
-                    attach_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                )
+    def start(self, cmd: str):
+        master_fd, slave_fd = pty.openpty()
+        pid = os.fork()
+        if pid == 0:
+            try:
+                os.close(master_fd)
+                for fd in (0, 1, 2):
+                    os.dup2(slave_fd, fd)
+                os.close(slave_fd)
+                os.execve("/bin/sh", ["/bin/sh", "-c", cmd], os.environ)
+            except Exception:
+                os._exit(1)
+        else:
+            os.close(slave_fd)
+            fl = fcntl.fcntl(master_fd, fcntl.F_GETFL)
+            fcntl.fcntl(master_fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+            self._master_fd = master_fd
+            self._child_pid = pid
+
+    def set_size(self, rows: int, cols: int):
+        if self._master_fd is not None:
+            try:
+                winsize = struct.pack("HHHH", rows, cols, 0, 0)
+                fcntl.ioctl(self._master_fd, termios.TIOCSWINSZ, winsize)
+            except OSError:
+                pass
 
     def write_input(self, data: bytes):
-        text = data.decode("utf-8", errors="replace")
-        subprocess.run(
-            ["tmux", "send-keys", "-t", self.name, "-l", text],
-            capture_output=True, timeout=2,
-        )
+        if self._master_fd is not None:
+            try:
+                os.write(self._master_fd, data)
+            except OSError:
+                pass
 
     async def read_output(self, websocket: WebSocket):
         sent_initial = False
+        self.set_size(80, 24)
         try:
             while self._running:
-                new_bytes = b""
-                try:
-                    with open(self.output_file, "rb") as f:
-                        f.seek(self._read_pos)
-                        new_bytes = f.read()
-                except OSError:
-                    await asyncio.sleep(0.15)
+                if self._master_fd is None:
+                    await asyncio.sleep(0.1)
                     continue
-                if new_bytes:
-                    self._read_pos += len(new_bytes)
-                    prefix = b"\x1b[2J\x1b[H" if not sent_initial else b""
-                    sent_initial = True
-                    try:
-                        await websocket.send_bytes(prefix + new_bytes)
-                    except Exception:
-                        break
-                await asyncio.sleep(0.15)
+                try:
+                    new_bytes = os.read(self._master_fd, 4096)
+                    if new_bytes:
+                        prefix = b"\x1b[2J\x1b[H" if not sent_initial else b""
+                        sent_initial = True
+                        try:
+                            await websocket.send_bytes(prefix + new_bytes)
+                        except Exception:
+                            break
+                except BlockingIOError:
+                    pass
+                except OSError:
+                    break
+                await asyncio.sleep(0.05)
         except Exception:
             pass
 
     def close(self):
         self._running = False
-        subprocess.run(
-            ["tmux", "pipe-pane", "-o", "-t", self.name],
-            capture_output=True, timeout=3,
-        )
-        subprocess.run(
-            ["tmux", "kill-session", "-t", self.name],
-            capture_output=True, timeout=3,
-        )
-        try:
-            if os.path.exists(self.output_file):
-                os.unlink(self.output_file)
-        except OSError:
-            pass
+        if self._child_pid:
+            try:
+                os.kill(self._child_pid, signal.SIGTERM)
+                os.waitpid(self._child_pid, 0)
+            except OSError:
+                pass
+        if self._master_fd is not None:
+            try:
+                os.close(self._master_fd)
+            except OSError:
+                pass
+            self._master_fd = None
 
 
 def _verify_ws_token(token: str) -> bool:
@@ -237,6 +248,7 @@ def api_directory_tasks(
             "time_dedicated": t.time_dedicated,
             "tags": tags,
             "finished_date": t.finished_date,
+            "project_path": d.project_path or "",
         }
         result.append(obj)
     return result
@@ -252,6 +264,8 @@ def api_task_detail(task_id: int, request: Request):
     tags_str = task_cmds.get_tags_for_task_display(task.id)
     tags = [s.strip() for s in tags_str.split(",")] if tags_str else []
     notes = note_cmds.list_notes(task_id=task.id)
+    dir_obj = directory_cmds.get_directory(task.directory_id)
+    project_path = dir_obj.project_path if dir_obj else ""
     return {
         "id": task.id,
         "name": task.name,
@@ -264,6 +278,7 @@ def api_task_detail(task_id: int, request: Request):
         "time_dedicated": task.time_dedicated,
         "tags": tags,
         "finished_date": task.finished_date,
+        "project_path": project_path,
         "notes": [
             {"id": n.id, "date": n.date, "note": n.note, "file_path": n.file_path}
             for n in notes
@@ -293,65 +308,122 @@ def api_task_opencode(task_id: int, request: Request):
     if not opencode_path:
         raise HTTPException(status_code=400, detail="opencode not installed")
 
+    dir_obj = directory_cmds.get_directory(task.directory_id)
+    if not dir_obj or not dir_obj.project_path:
+        raise HTTPException(
+            status_code=400,
+            detail="Task directory has no attached project. Use :attachProject <path> first.",
+        )
+    project_root = dir_obj.project_path
+
     session_name = f"tw-ai-{task_id}"
     if session_name in _sessions and _sessions[session_name]._running:
         return {"status": "ok", "session_id": session_name, "reused": True}
 
-    from .db import get_conn
-
-    conn = get_conn()
-    row = conn.execute(
-        "SELECT d.name AS dname, a.name AS aname FROM directories d "
-        "JOIN archives a ON a.id = d.archive_id WHERE d.id = ?",
-        (task.directory_id,),
-    ).fetchone()
-    dir_name = row["dname"] if row else None
-    arch_name = row["aname"] if row else None
-
-    dir_obj = directory_cmds.get_directory(task.directory_id)
-    project_root = dir_obj.project_path if dir_obj and dir_obj.project_path \
-        else str(Path(__file__).resolve().parent.parent)
-
-    notes = note_cmds.list_notes(task.id)
-    ctx = {
-        "task": {
-            "name": task.name,
-            "description": task.description,
-            "deadline": task.deadline,
-            "urgency": task.urgency,
-            "difficulty": task.difficulty,
-            "time_dedicated": task.time_dedicated,
-            "repeatable": bool(task.repeatable),
-            "repeatable_type": task.repeatable_type,
-            "repeat_on_specific_day": task.repeat_on_specific_day,
-            "finished": bool(task.finished),
-        },
-        "directory": dir_name,
-        "archive": arch_name,
-        "project_path": project_root,
-        "notes": [
-            {
-                "date": n.date,
-                "note": n.note,
-                "file_path": n.file_path,
-                "created_at": n.created_at,
-            }
-            for n in notes
-        ],
-    }
-
-    fd = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".json", prefix="taskwatch_ai_", delete=False
-    )
-    with fd:
-        json.dump(ctx, fd, indent=2)
-        ctx_file = fd.name
-
-    session = TerminalSession(session_name)
-    cmd = f"{opencode_path} run 'Help with: {task.name}' -f '{ctx_file}' -i --dir '{project_root}'"
-    session.start(cmd, open_terminal=True)
+    session = PTYSession(session_name)
+    cmd = f"cd {project_root} && {opencode_path} --dir {project_root}"
+    session.start(cmd)
     _sessions[session_name] = session
     return {"status": "ok", "session_id": session_name}
+
+
+@app.post("/api/directories/{dir_id}/opencode")
+def api_directory_opencode(dir_id: int, request: Request):
+    _verify_token(request)
+    opencode_path = _find_opencode()
+    if not opencode_path:
+        raise HTTPException(status_code=400, detail="opencode not installed")
+    dir_obj = directory_cmds.get_directory(dir_id)
+    if not dir_obj or not dir_obj.project_path:
+        raise HTTPException(
+            status_code=400,
+            detail="Directory has no attached project. Use :attachProject <path> first.",
+        )
+    project_root = dir_obj.project_path
+    session_name = f"tw-ai-dir-{dir_id}"
+    if session_name in _sessions and _sessions[session_name]._running:
+        return {"status": "ok", "session_id": session_name, "reused": True}
+    session = PTYSession(session_name)
+    cmd = f"cd {project_root} && {opencode_path} --dir {project_root}"
+    session.start(cmd)
+    _sessions[session_name] = session
+    return {"status": "ok", "session_id": session_name}
+
+
+@app.post("/api/tasks/{task_id}/opencode/prompt")
+async def api_task_opencode_prompt(task_id: int, request: Request):
+    _verify_token(request)
+    tasks = task_cmds.list_tasks()
+    task = next((t for t in tasks if t.id == task_id), None)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    opencode_path = _find_opencode()
+    if not opencode_path:
+        raise HTTPException(status_code=400, detail="opencode not installed")
+
+    dir_obj = directory_cmds.get_directory(task.directory_id)
+    if not dir_obj or not dir_obj.project_path:
+        raise HTTPException(
+            status_code=400,
+            detail="Task directory has no attached project. Use :attachProject <path> first.",
+        )
+
+    body = await request.json()
+    prompt = (body or {}).get("prompt", "")
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Prompt is required")
+
+    agent = (body or {}).get("agent", "build")
+    command = (body or {}).get("command", "")
+    model = (body or {}).get("model", "")
+    session_id = (body or {}).get("session_id", "")
+
+    cmd = [opencode_path, "run", "--agent", agent, "--format", "json", "--dir", dir_obj.project_path]
+    if session_id:
+        cmd += ["--session", session_id]
+    if command:
+        cmd += ["--command", command]
+    if model:
+        cmd += ["--model", model]
+    cmd += [prompt]
+
+    async def event_stream():
+        loop = asyncio.get_event_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+
+        def reader():
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=dir_obj.project_path,
+            )
+            try:
+                for line in proc.stdout:
+                    loop.call_soon_threadsafe(queue.put_nowait, ("data", line))
+                proc.wait()
+            except Exception:
+                pass
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
+
+        thread = threading.Thread(target=reader, daemon=True)
+        thread.start()
+
+        try:
+            while True:
+                kind, data = await queue.get()
+                if kind == "done":
+                    yield "data: [DONE]\n\n"
+                    break
+                if data:
+                    yield f"data: {data.rstrip()}\n\n"
+        finally:
+            thread.join(timeout=2)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @app.websocket("/ws/terminal/{session_id}")
@@ -494,6 +566,27 @@ body{font-family:ui-monospace,'SF Mono','JetBrains Mono','Fira Code','Cascadia C
 #tpc{background:none;border:none;color:var(--text2);font-size:.8rem;cursor:pointer;font-family:inherit;padding:4px 8px}
 #tpc:active{color:var(--accent)}
 #tx{flex:1;overflow:hidden;padding:2px}
+.pc{margin-top:16px;background:var(--card);border:1px solid var(--border);padding:12px}
+.pch{font-size:.7rem;color:var(--accent);letter-spacing:.03em;margin-bottom:8px;font-weight:600;display:flex;justify-content:space-between}
+.pnc{background:none;border:none;color:var(--text3);font-size:.7rem;cursor:pointer;font-family:inherit;padding:0;line-height:1}
+.pnc:hover{color:var(--accent)}
+.pct{display:flex;gap:6px;margin-bottom:8px}
+.ps{background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:.72rem;padding:4px 8px;outline:none}
+.ps:focus{border-color:var(--accent)}
+.pi{flex:1}
+.pconv{max-height:300px;overflow-y:auto;margin-bottom:8px;display:flex;flex-direction:column;gap:6px}
+.pm{padding:6px 10px;font-size:.75rem;line-height:1.4;max-width:90%;word-break:break-word;white-space:pre-wrap;border:1px solid var(--border)}
+.pmu{margin-left:auto;background:rgba(229,57,53,.08);border-color:var(--accent);color:var(--text)}
+.pma{margin-right:auto;background:var(--bg);color:var(--text2)}
+.pme{margin:0 auto;color:var(--danger);font-size:.7rem;text-align:center}
+.pin{display:flex;gap:6px;align-items:flex-end}
+.pta{flex:1;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:.75rem;padding:6px 8px;outline:none;resize:none;min-height:32px;line-height:1.4}
+.pta:focus{border-color:var(--accent)}
+.psb{flex-shrink:0;padding:6px 12px;border-radius:0;font-size:.72rem;font-weight:600;border:1px solid var(--accent);background:transparent;color:var(--accent);cursor:pointer;font-family:inherit;transition:all .12s;height:32px}
+.psb:active{background:var(--accent);color:#fff}
+.psb:disabled{opacity:.4;cursor:default}
+.pma.thinking:after{content:'█';animation:bl 1s step-end infinite;color:var(--accent);margin-left:2px}
+@keyframes bl{50%{opacity:0}}
 </style>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.5.0/css/xterm.min.css">
 </head>
@@ -520,7 +613,7 @@ body{font-family:ui-monospace,'SF Mono','JetBrains Mono','Fira Code','Cascadia C
 <script>
 var T=(new URLSearchParams(location.search).get('token')||localStorage.getItem('tw_token')||'');
 if(!localStorage.getItem('tw_token')&&T)localStorage.setItem('tw_token',T);
-var NAV={},BC=document.getElementById('bc'),_TC=[],_AF='all';
+var NAV={},BC=document.getElementById('bc'),_TC=[],_PC=[],_AF='all',_SID='';
 function api(p){var s=p.indexOf('?')>=0?'&':'?';return fetch('/api'+p+(T?s+'token='+T:''),{headers:{Accept:'application/json'}}).then(function(r){if(!r.ok)throw Error(r.status+' '+r.statusText);return r.json()})}
 function esc(s){if(!s)return'';var d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function qj(s){return s.replace(/'/g,"\\'")}
@@ -536,7 +629,7 @@ function onS(){if(NAV.level=='tasks'&&_TC.length)renderTasks(_TC)}
 function renderTasks(arr){
   var q=document.getElementById('si').value.toLowerCase().trim();
   var c=gM(),h='<span class="bk" onclick="showDirs('+NAV.archId+',\''+qj(esc(NAV.archName))+'\')">&lt; '+esc(NAV.archName)+'</span>';
-  var flt='<div class="fb"><button onclick="chF(this,\'all\')" class="act">All</button><button onclick="chF(this,\'unf\')">Unfinished</button><button onclick="chF(this,\'urg\')">Urgent</button><button onclick="chF(this,\'pin\')">Pinned</button></div>';
+  var flt='<div class="fb">'+(NAV.dirProjectPath?'<span class="b ba ai-dir" onclick="openDirAI('+NAV.dirId+')" style="cursor:pointer;margin-right:8px">[AI]</span>':'')+'<button onclick="chF(this,\'all\')" class="act">All</button><button onclick="chF(this,\'unf\')">Unfinished</button><button onclick="chF(this,\'urg\')">Urgent</button><button onclick="chF(this,\'pin\')">Pinned</button></div>';
   var tasks=arr;
   if(_AF=='unf')tasks=tasks.filter(function(t){return!t.done});
   else if(_AF=='urg')tasks=tasks.filter(function(t){return t.urgency>=4});
@@ -599,18 +692,19 @@ function showTasks(dirId,dirName,archId,archName){
   sk(3);
   api('/directories/'+dirId+'/tasks').then(function(tasks){
     _TC=tasks;
+    NAV.dirProjectPath=tasks.length?tasks[0].project_path||'':'';
     if(!tasks.length){gM().innerHTML='<div class="emp">No tasks</div>';return}
     _AF='all';renderTasks(tasks);
   }).catch(function(e){gM().innerHTML='<div class="err">Error: '+e.message+'</div>'});
 }
 function showTask(taskId,taskName,dirId,dirName,archId,archName){
-  NAV={level:'task',taskId:taskId,taskName:taskName,dirId:dirId,dirName:dirName,archId:archId,archName:archName};_TC=[];
+  NAV={level:'task',taskId:taskId,taskName:taskName,dirId:dirId,dirName:dirName,archId:archId,archName:archName};_TC=[];_PC=[];_SID='';
   setBC('<span class="s">/</span><span class="b" onclick="showDirs('+archId+',\''+qj(esc(archName))+'\')">'+esc(archName)+'</span><span class="s">/</span><span class="b" onclick="showTasks('+dirId+',\''+qj(esc(dirName))+'\','+archId+',\''+qj(esc(archName))+'\')">'+esc(dirName)+'</span><span class="s">/</span><span>'+esc(taskName)+'</span>');
   var c=gM();c.innerHTML='<div class="sk"><div class="sk-l sk-w70"></div><div class="sk-l sk-w50"></div><div class="sk-l sk-w40"></div></div>';
   api('/tasks/'+taskId).then(function(t){
     var h='<span class="bk" onclick="showTasks('+dirId+',\''+qj(esc(dirName))+'\','+archId+',\''+qj(esc(archName))+'\')">&lt; '+esc(dirName)+'</span>'
       +'<div class="c cx"><div class="ch"><span class="cn'+(t.pinned?' pd':'')+'">'+esc(t.name)+'</span>'
-      +'<span class="bw">'+uB(t.urgency)+' '+dB(t.difficulty)+' <span class="b ba" id="aib" onclick="openAI('+t.id+',\''+qj(esc(t.name))+'\')" style="cursor:pointer;transition:all .12s">[AI]</span></span></div>'
+      +'<span class="bw">'+uB(t.urgency)+' '+dB(t.difficulty)+(t.project_path?' <span class="b ba" id="aib" onclick="openAI('+t.id+',\''+qj(esc(t.name))+'\')" style="cursor:pointer;transition:all .12s">[AI]</span>':'')+'</span></div>'
       +'<div class="mt"><span>'+t.time_dedicated+'m</span>'+(t.deadline!=='none'?'<span>due: '+esc(t.deadline)+'</span>':'')+'</div>'
       +(t.tags&&t.tags.length?'<div class="tgs">'+t.tags.map(function(tg){return'<span class="tg">'+esc(tg)+'</span>'}).join('')+'</div>':'')
       +(t.description?'<div class="desc">'+esc(t.description)+'</div>':'')
@@ -619,6 +713,17 @@ function showTask(taskId,taskName,dirId,dirName,archId,archName){
       h+='<div class="notes"><h2>Notes ('+t.notes.length+')</h2>';
       t.notes.forEach(function(n){h+='<div class="no"><div class="nd">'+esc(n.date)+'</div><div class="nt">'+esc(n.note)+'</div>'+(n.file_path?'<div class="nf">file: '+esc(n.file_path)+'</div>':'')+'</div>'});
       h+='</div>';
+    }
+    if(t.project_path){
+      var aopts=['build','plan','explore','general','summary','compaction','title'];
+      var asel='<select id="ag" class="ps">';
+      aopts.forEach(function(a){asel+='<option value="'+a+'">'+a+'</option>'});
+      asel+='</select>';
+      h+='<div class="pc"><div class="pch">[AI] prompt <span class="pnc" onclick="newChat()">[x]</span></div>'
+        +'<div class="pct">'+asel+'<input id="pcmd" class="ps pi" placeholder="command (optional)"></div>'
+        +'<div id="pconv" class="pconv"></div>'
+        +'<div class="pin"><textarea id="ppt" class="pta" placeholder="Ask opencode..." rows="2"></textarea>'
+        +'<button class="psb" onclick="sendPrompt('+t.id+')">[Send]</button></div></div>';
     }
     c.innerHTML=h;
   }).catch(function(e){c.innerHTML='<div class="err">Error: '+e.message+'</div>'});
@@ -710,6 +815,86 @@ function openAI(id,name){
     if(el){el.textContent='ERR';el.style.color='var(--danger)';el.style.borderColor='var(--danger)';setTimeout(function(){el.textContent='[AI]';el.style.color='';el.style.borderColor=''},3000)}
     var c=gM();if(c)c.innerHTML+='<div class="err" style="margin-top:8px">opencode: '+e.message+'</div>'
   });
+}
+function openDirAI(id){
+  var btn=document.querySelector('.ai-dir');
+  if(btn)btn.textContent='...';
+  if(TERM_SID){closeTerminal()}
+  var s='/api/directories/'+id+'/opencode';
+  var q=s.indexOf('?')>=0?'&':'?';
+  fetch(s+(T?q+'token='+T:''),{method:'POST',headers:{Accept:'application/json'}}).then(function(r){if(!r.ok)throw Error(r.status+' '+r.statusText);return r.json()}).then(function(r){
+    if(btn){btn.textContent='OK';btn.style.color='var(--success)';btn.style.borderColor='var(--success)';setTimeout(function(){btn.textContent='[AI]';btn.style.color='';btn.style.borderColor=''},3000)}
+    showTerminal(r.session_id)
+  }).catch(function(e){
+    if(btn){btn.textContent='ERR';btn.style.color='var(--danger)';btn.style.borderColor='var(--danger)';setTimeout(function(){btn.textContent='[AI]';btn.style.color='';btn.style.borderColor=''},3000)}
+    var c=gM();if(c)c.innerHTML+='<div class="err" style="margin-top:8px">opencode: '+e.message+'</div>'
+  });
+}
+function newChat(){_PC=[];_SID='';renderConv();document.getElementById('ppt').value=''}
+function sendPrompt(id){
+  var input=document.getElementById('ppt');
+  var prompt=input.value.trim();
+  if(!prompt)return;
+  input.value='';
+  _PC.push({role:'user',text:prompt});
+  renderConv();
+  var btn=document.querySelector('.psb');
+  btn.disabled=true;btn.textContent='...';
+  var ag=document.getElementById('ag');
+  var cmd=document.getElementById('pcmd');
+  var model=document.getElementById('pmodel');
+  var aiIdx=_PC.length;
+  _PC.push({role:'ai',text:'',thinking:true});
+  renderConv();
+  var url='/api/tasks/'+id+'/opencode/prompt'+(T?'?token='+T:'');
+  var body={prompt:prompt,agent:ag?ag.value:'build',command:cmd?cmd.value:'',session_id:_SID};
+  if(model)body.model=model.value;
+  fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){
+    if(!r.ok)throw Error(r.status+' '+r.statusText);
+    var reader=r.body.getReader();
+    var decoder=new TextDecoder();
+    var buf='';
+    function read(){
+      reader.read().then(function(result){
+        if(result.done){
+          _PC[aiIdx].thinking=false;btn.disabled=false;btn.textContent='[Send]';renderConv();
+          return;
+        }
+        buf+=decoder.decode(result.value,{stream:true});
+        var i;
+        while((i=buf.indexOf('\n'))>=0){
+          var line=buf.slice(0,i);
+          buf=buf.slice(i+1);
+          if(line.indexOf('data: ')!==0)continue;
+          var data=line.slice(6);
+          if(data==='[DONE]')continue;
+          try{var evt=JSON.parse(data);if(evt.sessionID)_SID=evt.sessionID;if(evt.type==='text'&&evt.part&&evt.part.text)_PC[aiIdx].text+=evt.part.text}catch(e){}
+        }
+        renderConv();
+        read();
+      }).catch(function(e){
+        _PC[aiIdx].text+='\n[Error: '+e.message+']';_PC[aiIdx].thinking=false;btn.disabled=false;btn.textContent='[Send]';renderConv();
+      });
+    }
+    read();
+  }).catch(function(e){
+    _PC.push({role:'error',text:e.message});
+    renderConv();
+    btn.disabled=false;btn.textContent='[Send]';
+  });
+  input.focus();
+}
+function renderConv(){
+  var el=document.getElementById('pconv');
+  if(!el)return;
+  var h='';
+  _PC.forEach(function(m){
+    if(m.role=='user')h+='<div class="pm pmu">'+esc(m.text)+'</div>';
+    else if(m.role=='ai')h+='<div class="pm pma'+(m.thinking?' thinking':'')+'">'+esc(m.text)+'</div>';
+    else h+='<div class="pme">'+esc(m.text)+'</div>';
+  });
+  el.innerHTML=h;
+  el.scrollTop=el.scrollHeight;
 }
 showArchives();
 </script>

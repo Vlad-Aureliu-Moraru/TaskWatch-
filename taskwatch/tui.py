@@ -896,6 +896,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         "dedupn": "_cmd_note_dedup",
         "recalculateLevel": "_cmd_recalculate_level",
         "serve": "_cmd_serve",
+        "review": "_cmd_review",
     }
 
     _CMD_PREFIX_DISPATCH: list[tuple[str, str]] = [
@@ -2013,6 +2014,76 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         stats_w = LineBox(VimListBox(SimpleFocusListWalker(walker)))
         self._stats_overlay = Overlay(
             stats_w,
+            self._frame,
+            align="center",
+            width=("relative", 72),
+            valign="middle",
+            height=("relative", 80),
+        )
+        self._loop.widget = self._stats_overlay
+
+    def _cmd_review(self) -> None:
+        from . import review_cmds
+
+        data = review_cmds.get_review_data()
+        today = date.today()
+
+        walker: list[Text] = []
+
+        def add(text: str | list) -> None:
+            walker.append(Text(text))
+
+        add([("head", f"  \U0001f50d  Review \u2014 {today.strftime('%A, %d/%m/%Y')}")])
+
+        comp_pct = round((data["finished"] / data["total"] * 100) if data["total"] else 0)
+        add([("dim", f"  Tasks: {data['total']}  |  Done: {data['finished']}/{data['total']} ({comp_pct}%)  |  Pending: {data['pending']}")])
+        add([("dim", f"  Timer today: {data['timer_minutes_today']}m")])
+        add("")
+
+        overdue = data["overdue"]
+        if overdue:
+            add([("error", f"  \u26a0 Overdue ({len(overdue)})")])
+            for r in overdue:
+                deadline = r["deadline"]
+                add(f"    \u26a0 {r['name']}  ({r['arch_name']} \u25b8 {r['dir_name']})  [was due {deadline}]")
+            add("")
+
+        due_today = data["due_today"]
+        if due_today:
+            add([("warn", f"  \U0001f504 Due today ({len(due_today)})")])
+            for r in due_today:
+                add(f"    \U0001f504 {r['name']}  ({r['arch_name']} \u25b8 {r['dir_name']})  [urg:{r['urgency']} diff:{r['difficulty']}]")
+            add("")
+
+        due_tomorrow = data["due_tomorrow"]
+        if due_tomorrow:
+            add([("c2", f"  \U0001f4c5 Due tomorrow ({len(due_tomorrow)})")])
+            for r in due_tomorrow:
+                add(f"    \U0001f4c5 {r['name']}  ({r['arch_name']} \u25b8 {r['dir_name']})")
+            add("")
+
+        completed_today = data["completed_today"]
+        if completed_today:
+            add([("done", f"  \u2713 Completed today ({len(completed_today)})")])
+            for r in completed_today:
+                add(f"    \u2713 {r['name']}  ({r['arch_name']} \u25b8 {r['dir_name']})")
+            add("")
+
+        completed_week = data["completed_this_week"]
+        if completed_week:
+            add([("c1", f"  \u2713 Completed earlier this week ({len(completed_week)})")])
+            for r in completed_week[:5]:
+                add(f"    \u2713 {r['name']}  ({r['arch_name']} \u25b8 {r['dir_name']})  [{r['finished_date']}]")
+            if len(completed_week) > 5:
+                add([("dim", f"    ... and {len(completed_week) - 5} more")])
+            add("")
+
+        if not any([overdue, due_today, due_tomorrow, completed_today]):
+            add([("dim", "  \u2014 Nothing urgent. You're on top of things! \U0001f389")])
+
+        rw = LineBox(VimListBox(SimpleFocusListWalker(walker)))
+        self._stats_overlay = Overlay(
+            rw,
             self._frame,
             align="center",
             width=("relative", 72),

@@ -153,6 +153,7 @@ COMMANDS = [
     "preset ", "preset list", "preset add", "preset remove",
     "update", "recalculateLevel",
     "serve", "serve stop", "serve status",
+    "review",
 ]
 
 CELEBRATION_MESSAGES = [
@@ -251,6 +252,7 @@ HELP_ENTRIES: list[tuple[str, str, str]] = [
     ("Bulk Smart Select", ":select due today", "Select all tasks due today"),
     ("Bulk Smart Select", ":select pinned", "Select all pinned tasks"),
     ("Standup", ":standup", "Show yesterday's completed tasks as markdown"),
+    ("Review", ":review", "Show a comprehensive overview: overdue, due today/tomorrow, completed today/this week, and stats"),
     ("Sound", ":sound", "Toggle timer sounds on/off"),
     ("Sound", ":sound on | :sound off", "Explicit enable / disable"),
     ("Sound", ":sound work <path>", "Set custom work-end sound file"),
