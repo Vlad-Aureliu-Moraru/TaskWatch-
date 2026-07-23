@@ -391,6 +391,7 @@ async def _opencode_stream(cmd: list[str], cwd: str, extra_env: dict | None = No
     """Async generator that runs an opencode subprocess and yields SSE lines."""
     loop = asyncio.get_event_loop()
     queue: asyncio.Queue = asyncio.Queue()
+    proc_holder: list[subprocess.Popen | None] = [None]
 
     def reader():
         proc_env = os.environ.copy()
@@ -404,6 +405,7 @@ async def _opencode_stream(cmd: list[str], cwd: str, extra_env: dict | None = No
             cwd=cwd,
             env=proc_env,
         )
+        proc_holder[0] = proc
         try:
             for line in proc.stdout:
                 if convo_key:
@@ -434,6 +436,10 @@ async def _opencode_stream(cmd: list[str], cwd: str, extra_env: dict | None = No
             if data:
                 yield f"data: {data.rstrip()}\n\n"
     finally:
+        proc = proc_holder[0]
+        if proc and proc.returncode is None:
+            proc.kill()
+            proc.wait()
         thread.join(timeout=2)
 
 
@@ -526,7 +532,11 @@ async def api_directory_opencode_prompt(dir_id: int, request: Request):
 @app.get("/api/tasks/{task_id}/opencode/convo")
 def api_task_opencode_convo(task_id: int, request: Request):
     _verify_token(request)
-    raw = _read_convo("task", task_id)
+    try:
+        raw = _read_convo("task", task_id)
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to read convo: {e}")
     merged = []
     for entry in raw:
         if merged and entry.get("role") == "ai" and merged[-1].get("role") == "ai":
@@ -546,7 +556,11 @@ def api_task_opencode_clear_convo(task_id: int, request: Request):
 @app.get("/api/directories/{dir_id}/opencode/convo")
 def api_directory_opencode_convo(dir_id: int, request: Request):
     _verify_token(request)
-    raw = _read_convo("dir", dir_id)
+    try:
+        raw = _read_convo("dir", dir_id)
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to read convo: {e}")
     merged = []
     for entry in raw:
         if merged and entry.get("role") == "ai" and merged[-1].get("role") == "ai":
