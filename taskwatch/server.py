@@ -677,6 +677,7 @@ if(!localStorage.getItem('tw_token')&&T)localStorage.setItem('tw_token',T);
 var NAV={},BC=document.getElementById('bc'),_TC=[],_PC=[],_DPC=[],_AF='all',_SID='',_DSID='',_PLAN=false;
 var _MODELS={default:{plan:'opencode-default',build:'opencode-default'},free:{plan:'deepseek-v4-flash-free',build:'deepseek-v4-flash-free'},light:{plan:'deepseek-v4-pro',build:'deepseek-v4-flash'},medium:{plan:'qwen3.7-plus',build:'minimax-m3'},hard:{plan:'glm-5.1',build:'qwen3.7-max'}};
 var _CMDS=['taskwatch-attach','taskwatch-plan','taskwatch-next','taskwatch-review','done','compact'];
+var _PBUSY=false,_PABORT=null,_PQ=[],_DPBUSY=false,_DPABORT=null,_DPQ=[];
 function api(p){var s=p.indexOf('?')>=0?'&':'?';return fetch('/api'+p+(T?s+'token='+T:''),{headers:{Accept:'application/json'}}).then(function(r){if(!r.ok)throw Error(r.status+' '+r.statusText);return r.json()})}
 function esc(s){if(!s)return'';var d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function qj(s){return s.replace(/'/g,"\\'")}
@@ -691,6 +692,14 @@ function setAgent(el,agent){var tog=el.parentElement;tog.querySelectorAll('.at-b
 function updateModelDisplay(){var pm=document.getElementById('pm')||document.getElementById('dpm');var config=pm?pm.value:'default';var at=document.querySelector('.at-btn.active');var agent=at?at.dataset.agent:'build';var m=_MODELS[config];var name=m?(m[agent]||config):config;var ml=document.getElementById('pml')||document.getElementById('dpml');if(ml)ml.textContent=name}
 function onCmdInput(el,menuId){var menu=document.getElementById(menuId);if(!menu)return;var v=el.value.trim();if(v.startsWith('/')&&v.indexOf(' ')===-1){var q=v.slice(1).toLowerCase();var hits=_CMDS.filter(function(c){return c.toLowerCase().indexOf(q)>=0});menu.innerHTML='';hits.forEach(function(c){var mi=document.createElement('div');mi.className='cmdmi';mi.textContent='/'+c;mi.onclick=function(){insertCmd(c,el.id)};menu.appendChild(mi)});menu.classList.add('open')}else{menu.classList.remove('open')}}
 function insertCmd(cmd,inputId){var ta=document.getElementById(inputId);if(!ta)return;ta.value='/'+cmd;ta.style.height='';ta.style.height=Math.min(ta.scrollHeight,80)+'px';var menu=ta.parentElement.querySelector('.cmdmenu');if(menu)menu.classList.remove('open');ta.focus()}
+function onTaskBtnClick(id){if(_PBUSY){cancelTask()}else{sendPrompt(id)}}
+function onDirBtnClick(id){if(_DPBUSY){cancelDir()}else{sendDirPrompt(id)}}
+function cancelTask(){if(_PABORT){_PABORT.abort();_PABORT=null}}
+function cancelDir(){if(_DPABORT){_DPABORT.abort();_DPABORT=null}}
+function dequeueTask(){_PBUSY=false;_PABORT=null;if(_PQ.length>0){var n=_PQ.shift();_doSendTask(n.raw,n.id)}else{updateTaskBtn()}}
+function dequeueDir(){_DPBUSY=false;_DPABORT=null;if(_DPQ.length>0){var n=_DPQ.shift();_doSendDir(n.raw,n.id)}else{updateDirBtn()}}
+function updateTaskBtn(){var btn=document.getElementById('psb');if(!btn)return;btn.textContent=_PQ.length>0?'■ ('+_PQ.length+')':'▸'}
+function updateDirBtn(){var btn=document.getElementById('dsb');if(!btn)return;btn.textContent=_DPQ.length>0?'■ ('+_DPQ.length+')':'▸'}
 if(window.visualViewport)window.visualViewport.addEventListener('resize',function(){var el=document.querySelector('.pin');if(el&&window.visualViewport.height<window.innerHeight)setTimeout(function(){el.scrollIntoView({behavior:'smooth',block:'nearest'})},300)});
 function togS(){var e=document.getElementById('sbar');e.classList.toggle('open');if(!e.classList.contains('open'))document.getElementById('si').value=''}
 function onS(){if(NAV.level=='tasks'&&_TC.length)renderTasks(_TC)}
@@ -790,8 +799,8 @@ function showTask(taskId,taskName,dirId,dirName,archId,archName){
       h+='<div class="pc"><div class="pch">[AI] prompt <span style="display:flex;align-items:center;gap:6px"><span class="pnc" onclick="newChat()">[↻]</span></span></div>'
         +'<div class="pct"><div class="agent-toggle" id="atog"><button class="at-btn active" data-agent="build" onclick="setAgent(this,\'build\')">BUILD</button><button class="at-btn" data-agent="plan" onclick="setAgent(this,\'plan\')">PLAN</button></div>'+msel+'<span class="model-label" id="pml">opencode-default</span></div>'
         +'<div id="pconv" class="pconv"></div>'
-        +'<div class="pin"><div class="cmdmenu" id="cmdm"></div><textarea id="ppt" class="pta" placeholder="Ask opencode..." rows="1" oninput="this.style.height=\'\';this.style.height=Math.min(this.scrollHeight,80)+\'px\';onCmdInput(this,\'cmdm\')"></textarea>'
-        +'<button class="psb" onclick="sendPrompt('+t.id+')">▸</button></div></div>';
+        +'<div class="pin"><div class="cmdmenu" id="cmdm"></div><textarea id="ppt" class="pta" placeholder="Ask opencode..." rows="1" oninput="this.style.height=\'\';this.style.height=Math.min(this.scrollHeight,80)+\'px\';onCmdInput(this,\'cmdm\')" onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();onTaskBtnClick('+t.id+')}"></textarea>'
+        +'<button class="psb" id="psb" onclick="onTaskBtnClick('+t.id+')">▸</button></div></div>';
     }
     c.innerHTML=h;
   }).catch(function(e){c.innerHTML='<div class="err">Error: '+e.message+'</div>'});
@@ -879,8 +888,8 @@ function showDirAI(id){
     +'<div class="pc"><div class="pch">[AI] directory prompt <span style="display:flex;align-items:center;gap:6px"><span class="pnc" onclick="newDirChat()">[↻]</span></span></div>'
     +'<div class="pct"><div class="agent-toggle" id="datog"><button class="at-btn active" data-agent="build" onclick="setAgent(this,\'build\')">BUILD</button><button class="at-btn" data-agent="plan" onclick="setAgent(this,\'plan\')">PLAN</button></div>'+msel+'<span class="model-label" id="dpml">opencode-default</span></div>'
     +'<div id="dpconv" class="pconv"></div>'
-    +'<div class="pin"><div class="cmdmenu" id="dcmdm"></div><textarea id="dppt" class="pta" placeholder="Ask opencode about this project..." rows="1" oninput="this.style.height=\'\';this.style.height=Math.min(this.scrollHeight,80)+\'px\';onCmdInput(this,\'dcmdm\')"></textarea>'
-    +'<button class="psb" id="dsb" onclick="sendDirPrompt('+id+')">▸</button></div></div>';
+    +'<div class="pin"><div class="cmdmenu" id="dcmdm"></div><textarea id="dppt" class="pta" placeholder="Ask opencode about this project..." rows="1" oninput="this.style.height=\'\';this.style.height=Math.min(this.scrollHeight,80)+\'px\';onCmdInput(this,\'dcmdm\')" onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();onDirBtnClick('+id+')}"></textarea>'
+    +'<button class="psb" id="dsb" onclick="onDirBtnClick('+id+')">▸</button></div></div>';
   gM().innerHTML=h;
 }
 function exitDirAI(){renderTasks(_TC)}
@@ -890,13 +899,18 @@ function sendDirPrompt(id){
   if(!raw)return;
   input.value='';
   input.style.height='';
+  _DPC.push({role:'user',text:raw});
+  renderDirConv();
+  if(_DPBUSY){_DPQ.push({id:id,raw:raw});updateDirBtn();return}
+  _doSendDir(raw,id);
+}
+function _doSendDir(raw,id){
   var prompt=raw,command='';
   if(raw.startsWith('/')&&raw.indexOf(' ')===-1){command=raw.slice(1);prompt=''}
   if(_PLAN&&prompt){prompt='[PLAN] Do NOT write, edit, or create any files. Only read files and output analysis and recommendations. Plan: '+prompt}
-  _DPC.push({role:'user',text:raw});
-  renderDirConv();
   var btn=document.getElementById('dsb');
-  btn.disabled=true;btn.textContent='...';
+  btn.textContent='■';
+  _DPBUSY=true;_DPABORT=new AbortController();
   var ag=document.querySelector('.at-btn.active');
   var pm=document.getElementById('dpm');
   var aiIdx=_DPC.length;
@@ -904,14 +918,14 @@ function sendDirPrompt(id){
   renderDirConv();
   var url='/api/directories/'+id+'/opencode/prompt'+(T?'?token='+T:'');
   var body={prompt:prompt,agent:ag?ag.dataset.agent:'build',command:command,session_id:_DSID,config:pm?pm.value:'default'};
-  fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){
+  fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:_DPABORT.signal}).then(function(r){
     if(!r.ok)throw Error(r.status+' '+r.statusText);
     var reader=r.body.getReader();
     var decoder=new TextDecoder();
     var buf='';
     function read(){
       reader.read().then(function(result){
-        if(result.done){_DPC[aiIdx].thinking=false;btn.disabled=false;btn.textContent='▸';renderDirConv();return}
+        if(result.done){_DPC[aiIdx].thinking=false;renderDirConv();dequeueDir();return}
         buf+=decoder.decode(result.value,{stream:true});
         var i;
         while((i=buf.indexOf('\n'))>=0){
@@ -924,13 +938,13 @@ function sendDirPrompt(id){
         }
         renderDirConv();
         read();
-      }).catch(function(e){_DPC[aiIdx].text+='\n[Error: '+e.message+']';_DPC[aiIdx].thinking=false;btn.disabled=false;btn.textContent='▸';renderDirConv()});
+      }).catch(function(e){if(e.name==='AbortError'){_DPC[aiIdx].text+='\n[Cancelled]'}else{_DPC[aiIdx].text+='\n[Error: '+e.message+']'};_DPC[aiIdx].thinking=false;renderDirConv();dequeueDir()});
     }
     read();
-  }).catch(function(e){_DPC.push({role:'error',text:e.message});renderDirConv();btn.disabled=false;btn.textContent='▸'});
-  input.focus();
+  }).catch(function(e){if(e.name==='AbortError'){_DPC.push({role:'error',text:'Cancelled'})}else{_DPC.push({role:'error',text:e.message})};renderDirConv();dequeueDir()});
+  document.getElementById('dppt').focus();
 }
-function newDirChat(){_DPC=[];_DSID='';_PLAN=false;var tog=document.getElementById('datog');if(tog){tog.querySelectorAll('.at-btn.active').forEach(function(b){b.classList.remove('active')});var bt=tog.querySelector('.at-btn[data-agent="build"]');if(bt)bt.classList.add('active')}renderDirConv();updateModelDisplay()}
+function newDirChat(){if(_DPABORT){_DPABORT.abort();_DPABORT=null}_DPBUSY=false;_DPC=[];_DSID='';_DPQ=[];_PLAN=false;var tog=document.getElementById('datog');if(tog){tog.querySelectorAll('.at-btn.active').forEach(function(b){b.classList.remove('active')});var bt=tog.querySelector('.at-btn[data-agent="build"]');if(bt)bt.classList.add('active')}renderDirConv();updateModelDisplay();updateDirBtn()}
 function renderDirConv(){
   var el=document.getElementById('dpconv');
   if(!el)return;
@@ -943,20 +957,25 @@ function renderDirConv(){
   el.innerHTML=h;
   el.scrollTop=el.scrollHeight;
 }
-function newChat(){_PC=[];_SID='';_PLAN=false;var tog=document.getElementById('atog');if(tog){tog.querySelectorAll('.at-btn.active').forEach(function(b){b.classList.remove('active')});var bt=tog.querySelector('.at-btn[data-agent="build"]');if(bt)bt.classList.add('active')}renderConv();document.getElementById('ppt').value='';updateModelDisplay()}
+function newChat(){if(_PABORT){_PABORT.abort();_PABORT=null}_PBUSY=false;_PC=[];_SID='';_PQ=[];_PLAN=false;var tog=document.getElementById('atog');if(tog){tog.querySelectorAll('.at-btn.active').forEach(function(b){b.classList.remove('active')});var bt=tog.querySelector('.at-btn[data-agent="build"]');if(bt)bt.classList.add('active')}renderConv();document.getElementById('ppt').value='';updateModelDisplay();updateTaskBtn()}
 function sendPrompt(id){
   var input=document.getElementById('ppt');
   var raw=input.value.trim();
   if(!raw)return;
   input.value='';
   input.style.height='';
+  _PC.push({role:'user',text:raw});
+  renderConv();
+  if(_PBUSY){_PQ.push({id:id,raw:raw});updateTaskBtn();return}
+  _doSendTask(raw,id);
+}
+function _doSendTask(raw,id){
   var prompt=raw,command='';
   if(raw.startsWith('/')&&raw.indexOf(' ')===-1){command=raw.slice(1);prompt=''}
   if(_PLAN&&prompt){prompt='[PLAN] Do NOT write, edit, or create any files. Only read files and output analysis and recommendations. Plan: '+prompt}
-  _PC.push({role:'user',text:raw});
-  renderConv();
-  var btn=document.querySelector('.psb');
-  btn.disabled=true;btn.textContent='...';
+  var btn=document.getElementById('psb');
+  btn.textContent='■';
+  _PBUSY=true;_PABORT=new AbortController();
   var ag=document.querySelector('.at-btn.active');
   var pm=document.getElementById('pm');
   var aiIdx=_PC.length;
@@ -964,17 +983,14 @@ function sendPrompt(id){
   renderConv();
   var url='/api/tasks/'+id+'/opencode/prompt'+(T?'?token='+T:'');
   var body={prompt:prompt,agent:ag?ag.dataset.agent:'build',command:command,session_id:_SID,config:pm?pm.value:'default'};
-  fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){
+  fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:_PABORT.signal}).then(function(r){
     if(!r.ok)throw Error(r.status+' '+r.statusText);
     var reader=r.body.getReader();
     var decoder=new TextDecoder();
     var buf='';
     function read(){
       reader.read().then(function(result){
-        if(result.done){
-          _PC[aiIdx].thinking=false;btn.disabled=false;btn.textContent='▸';renderConv();
-          return;
-        }
+        if(result.done){_PC[aiIdx].thinking=false;renderConv();dequeueTask();return}
         buf+=decoder.decode(result.value,{stream:true});
         var i;
         while((i=buf.indexOf('\n'))>=0){
@@ -987,17 +1003,11 @@ function sendPrompt(id){
         }
         renderConv();
         read();
-      }).catch(function(e){
-        _PC[aiIdx].text+='\n[Error: '+e.message+']';_PC[aiIdx].thinking=false;btn.disabled=false;btn.textContent='▸';renderConv();
-      });
+      }).catch(function(e){if(e.name==='AbortError'){_PC[aiIdx].text+='\n[Cancelled]'}else{_PC[aiIdx].text+='\n[Error: '+e.message+']'};_PC[aiIdx].thinking=false;renderConv();dequeueTask()});
     }
     read();
-  }).catch(function(e){
-    _PC.push({role:'error',text:e.message});
-    renderConv();
-    btn.disabled=false;btn.textContent='▸';
-  });
-  input.focus();
+  }).catch(function(e){if(e.name==='AbortError'){_PC.push({role:'error',text:'Cancelled'})}else{_PC.push({role:'error',text:e.message})};renderConv();dequeueTask()});
+  document.getElementById('ppt').focus();
 }
 function renderConv(){
   var el=document.getElementById('pconv');
