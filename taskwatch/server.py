@@ -31,16 +31,21 @@ def _read_convo(prefix: str, id: int) -> list[dict]:
     path = _convo_path(prefix, id)
     if not path.exists():
         return []
+    try:
+        with open(path, errors="replace") as f:
+            content = f.read()
+    except OSError as e:
+        print(f"[convo] IO error reading {path}: {e}", flush=True)
+        return []
     result = []
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                result.append(json.loads(line))
-            except json.JSONDecodeError:
-                pass
+    for line in content.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            result.append(json.loads(line))
+        except json.JSONDecodeError:
+            pass
     return result
 
 
@@ -809,7 +814,7 @@ var _MODELS={default:{plan:'opencode-default',build:'opencode-default'},free:{pl
 var _CMDS=['taskwatch-attach','taskwatch-plan','taskwatch-next','taskwatch-review','done','compact'];
 var _PBUSY=false,_PABORT=null,_PQ=[],_DPBUSY=false,_DPABORT=null,_DPQ=[];
 setTimeout(function updateBadge(){updateAFKBadge();setTimeout(updateBadge,30000)},1000);
-function api(p){var s=p.indexOf('?')>=0?'&':'?';return fetch('/api'+p+(T?s+'token='+T:''),{headers:{Accept:'application/json'}}).then(function(r){if(!r.ok)throw Error(r.status+' '+r.statusText);return r.json()})}
+function api(p){var s=p.indexOf('?')>=0?'&':'?';return fetch('/api'+p+(T?s+'token='+T:''),{headers:{Accept:'application/json'}}).then(function(r){if(!r.ok)return r.json().then(function(e){throw Error(r.status+' '+r.statusText+': '+(e.detail||JSON.stringify(e)))}).catch(function(){throw Error(r.status+' '+r.statusText)});return r.json()})}
 function esc(s){if(!s)return'';var d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function qj(s){return s.replace(/'/g,"\\'")}
 function loadTaskConvo(id){api('/tasks/'+id+'/opencode/convo').then(function(msgs){if(!msgs||!msgs.length)return;_PC=msgs;for(var i=_PC.length-1;i>=0;i--){if(_PC[i].session_id){_SID=_PC[i].session_id;break}}renderConv()}).catch(function(e){console.error('loadTaskConvo',e);var el=document.getElementById('pconv');if(el)el.innerHTML='<div class="pme">Load failed: '+esc(e.message)+'</div>'})}
