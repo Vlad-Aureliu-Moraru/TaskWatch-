@@ -412,11 +412,11 @@ async def api_task_opencode_prompt(task_id: int, request: Request):
 
     body = await request.json()
     prompt = (body or {}).get("prompt", "")
-    if not prompt:
-        raise HTTPException(status_code=400, detail="Prompt is required")
+    command = (body or {}).get("command", "")
+    if not prompt and not command:
+        raise HTTPException(status_code=400, detail="Prompt or command is required")
 
     agent = (body or {}).get("agent", "build")
-    command = (body or {}).get("command", "")
     config = (body or {}).get("config", "default")
     session_id = (body or {}).get("session_id", "")
 
@@ -425,7 +425,8 @@ async def api_task_opencode_prompt(task_id: int, request: Request):
         cmd += ["--session", session_id]
     if command:
         cmd += ["--command", command]
-    cmd += [prompt]
+    if prompt:
+        cmd += [prompt]
 
     extra_env = None
     if config and config != "default":
@@ -450,10 +451,10 @@ async def api_directory_opencode_prompt(dir_id: int, request: Request):
         )
     body = await request.json()
     prompt = (body or {}).get("prompt", "")
-    if not prompt:
-        raise HTTPException(status_code=400, detail="Prompt is required")
-    agent = (body or {}).get("agent", "build")
     command = (body or {}).get("command", "")
+    if not prompt and not command:
+        raise HTTPException(status_code=400, detail="Prompt or command is required")
+    agent = (body or {}).get("agent", "build")
     config = (body or {}).get("config", "default")
     session_id = (body or {}).get("session_id", "")
     cmd = [opencode_path, "run", "--agent", agent, "--format", "json", "--dir", dir_obj.project_path]
@@ -461,7 +462,8 @@ async def api_directory_opencode_prompt(dir_id: int, request: Request):
         cmd += ["--session", session_id]
     if command:
         cmd += ["--command", command]
-    cmd += [prompt]
+    if prompt:
+        cmd += [prompt]
     extra_env = None
     if config and config != "default":
         cfg_path = os.path.expanduser(f"~/.config/opencode/configs/{config}.json")
@@ -782,7 +784,7 @@ function showTask(taskId,taskName,dirId,dirName,archId,archName){
       mopts.forEach(function(o){msel+='<option value="'+o+'">'+o+'</option>'});
       msel+='</select>';
       h+='<div class="pc"><div class="pch">[AI] prompt <span style="display:flex;align-items:center;gap:6px"><span class="pnc" onclick="newChat()">[↻]</span></span></div>'
-        +'<div class="pct"><div class="agent-toggle" id="atog"><button class="at-btn active" data-agent="build" onclick="setAgent(this,\'build\')">BUILD</button><button class="at-btn" data-agent="plan" onclick="setAgent(this,\'plan\')">PLAN</button></div>'+msel+'<span class="model-label" id="pml">opencode-default</span><input id="pcmd" class="ps pi" placeholder="command (optional)"></div>'
+        +'<div class="pct"><div class="agent-toggle" id="atog"><button class="at-btn active" data-agent="build" onclick="setAgent(this,\'build\')">BUILD</button><button class="at-btn" data-agent="plan" onclick="setAgent(this,\'plan\')">PLAN</button></div>'+msel+'<span class="model-label" id="pml">opencode-default</span></div>'
         +'<div id="pconv" class="pconv"></div>'
         +'<div class="pin"><textarea id="ppt" class="pta" placeholder="Ask opencode..." rows="1" oninput="this.style.height=\'\';this.style.height=Math.min(this.scrollHeight,80)+\'px\'"></textarea>'
         +'<button class="psb" onclick="sendPrompt('+t.id+')">▸</button></div></div>';
@@ -871,7 +873,7 @@ function showDirAI(id){
   msel+='</select>';
   var h='<span class="bk" onclick="exitDirAI()">&lt; '+esc(NAV.dirName)+'</span>'
     +'<div class="pc"><div class="pch">[AI] directory prompt <span style="display:flex;align-items:center;gap:6px"><span class="pnc" onclick="newDirChat()">[↻]</span></span></div>'
-    +'<div class="pct"><div class="agent-toggle" id="datog"><button class="at-btn active" data-agent="build" onclick="setAgent(this,\'build\')">BUILD</button><button class="at-btn" data-agent="plan" onclick="setAgent(this,\'plan\')">PLAN</button></div>'+msel+'<span class="model-label" id="dpml">opencode-default</span><input id="dcmd" class="ps pi" placeholder="command (optional)"></div>'
+    +'<div class="pct"><div class="agent-toggle" id="datog"><button class="at-btn active" data-agent="build" onclick="setAgent(this,\'build\')">BUILD</button><button class="at-btn" data-agent="plan" onclick="setAgent(this,\'plan\')">PLAN</button></div>'+msel+'<span class="model-label" id="dpml">opencode-default</span></div>'
     +'<div id="dpconv" class="pconv"></div>'
     +'<div class="pin"><textarea id="dppt" class="pta" placeholder="Ask opencode about this project..." rows="1" oninput="this.style.height=\'\';this.style.height=Math.min(this.scrollHeight,80)+\'px\'"></textarea>'
     +'<button class="psb" id="dsb" onclick="sendDirPrompt('+id+')">▸</button></div></div>';
@@ -880,23 +882,24 @@ function showDirAI(id){
 function exitDirAI(){renderTasks(_TC)}
 function sendDirPrompt(id){
   var input=document.getElementById('dppt');
-  var prompt=input.value.trim();
-  if(!prompt)return;
+  var raw=input.value.trim();
+  if(!raw)return;
   input.value='';
   input.style.height='';
-  if(_PLAN){prompt='[PLAN] Do NOT write, edit, or create any files. Only read files and output analysis and recommendations. Plan: '+prompt}
-  _DPC.push({role:'user',text:prompt});
+  var prompt=raw,command='';
+  if(raw.startsWith('/')&&raw.indexOf(' ')===-1){command=raw.slice(1);prompt=''}
+  if(_PLAN&&prompt){prompt='[PLAN] Do NOT write, edit, or create any files. Only read files and output analysis and recommendations. Plan: '+prompt}
+  _DPC.push({role:'user',text:raw});
   renderDirConv();
   var btn=document.getElementById('dsb');
   btn.disabled=true;btn.textContent='...';
   var ag=document.querySelector('.at-btn.active');
-  var cmd=document.getElementById('dcmd');
   var pm=document.getElementById('dpm');
   var aiIdx=_DPC.length;
   _DPC.push({role:'ai',text:'',thinking:true});
   renderDirConv();
   var url='/api/directories/'+id+'/opencode/prompt'+(T?'?token='+T:'');
-  var body={prompt:prompt,agent:ag?ag.dataset.agent:'build',command:cmd?cmd.value:'',session_id:_DSID,config:pm?pm.value:'default'};
+  var body={prompt:prompt,agent:ag?ag.dataset.agent:'build',command:command,session_id:_DSID,config:pm?pm.value:'default'};
   fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){
     if(!r.ok)throw Error(r.status+' '+r.statusText);
     var reader=r.body.getReader();
@@ -939,23 +942,24 @@ function renderDirConv(){
 function newChat(){_PC=[];_SID='';_PLAN=false;var tog=document.getElementById('atog');if(tog){tog.querySelectorAll('.at-btn.active').forEach(function(b){b.classList.remove('active')});var bt=tog.querySelector('.at-btn[data-agent="build"]');if(bt)bt.classList.add('active')}renderConv();document.getElementById('ppt').value='';updateModelDisplay()}
 function sendPrompt(id){
   var input=document.getElementById('ppt');
-  var prompt=input.value.trim();
-  if(!prompt)return;
+  var raw=input.value.trim();
+  if(!raw)return;
   input.value='';
   input.style.height='';
-  if(_PLAN){prompt='[PLAN] Do NOT write, edit, or create any files. Only read files and output analysis and recommendations. Plan: '+prompt}
-  _PC.push({role:'user',text:prompt});
+  var prompt=raw,command='';
+  if(raw.startsWith('/')&&raw.indexOf(' ')===-1){command=raw.slice(1);prompt=''}
+  if(_PLAN&&prompt){prompt='[PLAN] Do NOT write, edit, or create any files. Only read files and output analysis and recommendations. Plan: '+prompt}
+  _PC.push({role:'user',text:raw});
   renderConv();
   var btn=document.querySelector('.psb');
   btn.disabled=true;btn.textContent='...';
   var ag=document.querySelector('.at-btn.active');
-  var cmd=document.getElementById('pcmd');
   var pm=document.getElementById('pm');
   var aiIdx=_PC.length;
   _PC.push({role:'ai',text:'',thinking:true});
   renderConv();
   var url='/api/tasks/'+id+'/opencode/prompt'+(T?'?token='+T:'');
-  var body={prompt:prompt,agent:ag?ag.dataset.agent:'build',command:cmd?cmd.value:'',session_id:_SID,config:pm?pm.value:'default'};
+  var body={prompt:prompt,agent:ag?ag.dataset.agent:'build',command:command,session_id:_SID,config:pm?pm.value:'default'};
   fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){
     if(!r.ok)throw Error(r.status+' '+r.statusText);
     var reader=r.body.getReader();
