@@ -636,6 +636,7 @@ body{font-family:ui-monospace,'SF Mono','JetBrains Mono','Fira Code','Cascadia C
 .ptog{background:none;border:none;color:var(--text3);font-size:.7rem;cursor:pointer;font-family:inherit;padding:0;line-height:1}
 .ptog:hover{color:var(--accent)}.ptog.on{color:var(--accent);font-weight:700}
 .agent-toggle{display:inline-flex;border:1px solid var(--border);overflow:hidden;line-height:1}.at-btn{padding:3px 10px;font-size:.65rem;font-weight:700;letter-spacing:.04em;border:none;background:transparent;color:var(--text3);cursor:pointer;font-family:inherit;transition:all .12s;-webkit-tap-highlight-color:transparent}.at-btn.active{background:var(--accent);color:#fff}.model-label{font-size:.65rem;color:var(--text2);padding:4px 6px;white-space:nowrap;line-height:1}
+.pin{position:relative}.cmdmenu{display:none;position:absolute;bottom:100%;left:0;right:0;background:var(--card);border:1px solid var(--border);max-height:160px;overflow-y:auto;z-index:10}.cmdmenu.open{display:block}.cmdmi{padding:6px 10px;font-size:.72rem;color:var(--text2);cursor:pointer;border-bottom:1px solid var(--border);font-family:inherit}.cmdmi:last-child{border-bottom:none}.cmdmi:hover{background:var(--border);color:var(--text)}
 @media(max-width:600px){
   .pm{max-width:100%}
   .pconv{max-height:45vh}
@@ -675,6 +676,7 @@ var T=(new URLSearchParams(location.search).get('token')||localStorage.getItem('
 if(!localStorage.getItem('tw_token')&&T)localStorage.setItem('tw_token',T);
 var NAV={},BC=document.getElementById('bc'),_TC=[],_PC=[],_DPC=[],_AF='all',_SID='',_DSID='',_PLAN=false;
 var _MODELS={default:{plan:'opencode-default',build:'opencode-default'},free:{plan:'deepseek-v4-flash-free',build:'deepseek-v4-flash-free'},light:{plan:'deepseek-v4-pro',build:'deepseek-v4-flash'},medium:{plan:'qwen3.7-plus',build:'minimax-m3'},hard:{plan:'glm-5.1',build:'qwen3.7-max'}};
+var _CMDS=['taskwatch-attach','taskwatch-plan','taskwatch-next','taskwatch-review','done','compact'];
 function api(p){var s=p.indexOf('?')>=0?'&':'?';return fetch('/api'+p+(T?s+'token='+T:''),{headers:{Accept:'application/json'}}).then(function(r){if(!r.ok)throw Error(r.status+' '+r.statusText);return r.json()})}
 function esc(s){if(!s)return'';var d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function qj(s){return s.replace(/'/g,"\\'")}
@@ -687,6 +689,8 @@ function gM(){return document.getElementById('main')}
 function navTo(el){document.querySelectorAll('#bn button').forEach(function(b){b.classList.remove('act')});if(el)el.classList.add('act')}
 function setAgent(el,agent){var tog=el.parentElement;tog.querySelectorAll('.at-btn.active').forEach(function(b){b.classList.remove('active')});el.classList.add('active');_PLAN=(agent==='plan');updateModelDisplay()}
 function updateModelDisplay(){var pm=document.getElementById('pm')||document.getElementById('dpm');var config=pm?pm.value:'default';var at=document.querySelector('.at-btn.active');var agent=at?at.dataset.agent:'build';var m=_MODELS[config];var name=m?(m[agent]||config):config;var ml=document.getElementById('pml')||document.getElementById('dpml');if(ml)ml.textContent=name}
+function onCmdInput(el,menuId){var menu=document.getElementById(menuId);if(!menu)return;var v=el.value.trim();if(v.startsWith('/')&&v.indexOf(' ')===-1){var q=v.slice(1).toLowerCase();var hits=_CMDS.filter(function(c){return c.toLowerCase().indexOf(q)>=0});menu.innerHTML='';hits.forEach(function(c){var mi=document.createElement('div');mi.className='cmdmi';mi.textContent='/'+c;mi.onclick=function(){insertCmd(c,el.id)};menu.appendChild(mi)});menu.classList.add('open')}else{menu.classList.remove('open')}}
+function insertCmd(cmd,inputId){var ta=document.getElementById(inputId);if(!ta)return;ta.value='/'+cmd;ta.style.height='';ta.style.height=Math.min(ta.scrollHeight,80)+'px';var menu=ta.parentElement.querySelector('.cmdmenu');if(menu)menu.classList.remove('open');ta.focus()}
 if(window.visualViewport)window.visualViewport.addEventListener('resize',function(){var el=document.querySelector('.pin');if(el&&window.visualViewport.height<window.innerHeight)setTimeout(function(){el.scrollIntoView({behavior:'smooth',block:'nearest'})},300)});
 function togS(){var e=document.getElementById('sbar');e.classList.toggle('open');if(!e.classList.contains('open'))document.getElementById('si').value=''}
 function onS(){if(NAV.level=='tasks'&&_TC.length)renderTasks(_TC)}
@@ -786,7 +790,7 @@ function showTask(taskId,taskName,dirId,dirName,archId,archName){
       h+='<div class="pc"><div class="pch">[AI] prompt <span style="display:flex;align-items:center;gap:6px"><span class="pnc" onclick="newChat()">[↻]</span></span></div>'
         +'<div class="pct"><div class="agent-toggle" id="atog"><button class="at-btn active" data-agent="build" onclick="setAgent(this,\'build\')">BUILD</button><button class="at-btn" data-agent="plan" onclick="setAgent(this,\'plan\')">PLAN</button></div>'+msel+'<span class="model-label" id="pml">opencode-default</span></div>'
         +'<div id="pconv" class="pconv"></div>'
-        +'<div class="pin"><textarea id="ppt" class="pta" placeholder="Ask opencode..." rows="1" oninput="this.style.height=\'\';this.style.height=Math.min(this.scrollHeight,80)+\'px\'"></textarea>'
+        +'<div class="pin"><div class="cmdmenu" id="cmdm"></div><textarea id="ppt" class="pta" placeholder="Ask opencode..." rows="1" oninput="this.style.height=\'\';this.style.height=Math.min(this.scrollHeight,80)+\'px\';onCmdInput(this,\'cmdm\')"></textarea>'
         +'<button class="psb" onclick="sendPrompt('+t.id+')">▸</button></div></div>';
     }
     c.innerHTML=h;
@@ -875,7 +879,7 @@ function showDirAI(id){
     +'<div class="pc"><div class="pch">[AI] directory prompt <span style="display:flex;align-items:center;gap:6px"><span class="pnc" onclick="newDirChat()">[↻]</span></span></div>'
     +'<div class="pct"><div class="agent-toggle" id="datog"><button class="at-btn active" data-agent="build" onclick="setAgent(this,\'build\')">BUILD</button><button class="at-btn" data-agent="plan" onclick="setAgent(this,\'plan\')">PLAN</button></div>'+msel+'<span class="model-label" id="dpml">opencode-default</span></div>'
     +'<div id="dpconv" class="pconv"></div>'
-    +'<div class="pin"><textarea id="dppt" class="pta" placeholder="Ask opencode about this project..." rows="1" oninput="this.style.height=\'\';this.style.height=Math.min(this.scrollHeight,80)+\'px\'"></textarea>'
+    +'<div class="pin"><div class="cmdmenu" id="dcmdm"></div><textarea id="dppt" class="pta" placeholder="Ask opencode about this project..." rows="1" oninput="this.style.height=\'\';this.style.height=Math.min(this.scrollHeight,80)+\'px\';onCmdInput(this,\'dcmdm\')"></textarea>'
     +'<button class="psb" id="dsb" onclick="sendDirPrompt('+id+')">▸</button></div></div>';
   gM().innerHTML=h;
 }
