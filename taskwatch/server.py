@@ -13,10 +13,38 @@ import threading
 
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
+from pathlib import Path
 
 from . import archive_cmds, directory_cmds, note_cmds, stats_cmds, task_cmds
 from .paths import SERVER_TOKEN_PATH
 from .tui_helpers import _find_opencode
+
+CONVO_DIR = Path.home() / ".taskwatch" / "convos"
+
+
+def _convo_path(prefix: str, id: int) -> Path:
+    CONVO_DIR.mkdir(parents=True, exist_ok=True)
+    return CONVO_DIR / f"{prefix}_{id}.jsonl"
+
+
+def _read_convo(prefix: str, id: int) -> list[dict]:
+    path = _convo_path(prefix, id)
+    if not path.exists():
+        return []
+    with open(path) as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
+def _append_convo(prefix: str, id: int, entry: dict):
+    path = _convo_path(prefix, id)
+    with open(path, "a") as f:
+        f.write(json.dumps(entry, default=str) + "\n")
+
+
+def _clear_convo(prefix: str, id: int):
+    path = _convo_path(prefix, id)
+    path.unlink(missing_ok=True)
+
 
 app = FastAPI(title="TaskWatch+")
 
@@ -350,7 +378,7 @@ def api_directory_opencode(dir_id: int, request: Request):
     return {"status": "ok", "session_id": session_name}
 
 
-async def _opencode_stream(cmd: list[str], cwd: str, extra_env: dict | None = None):
+async def _opencode_stream(cmd: list[str], cwd: str, extra_env: dict | None = None, convo_key: tuple[str, int] | None = None):
     """Async generator that runs an opencode subprocess and yields SSE lines."""
     loop = asyncio.get_event_loop()
     queue: asyncio.Queue = asyncio.Queue()
@@ -369,6 +397,15 @@ async def _opencode_stream(cmd: list[str], cwd: str, extra_env: dict | None = No
         )
         try:
             for line in proc.stdout:
+                if convo_key and line.startswith("data: "):
+                    data = line[6:].strip()
+                    if data != "[DONE]":
+                        try:
+                            evt = json.loads(data)
+                            if evt.get("type") == "text" and evt.get("part", {}).get("text"):
+                                _append_convo(convo_key[0], convo_key[1], {"role": "ai", "text": evt["part"]["text"], "session_id": evt.get("sessionID", "")})
+                        except json.JSONDecodeError:
+                            pass
                 loop.call_soon_threadsafe(queue.put_nowait, ("data", line))
             proc.wait()
         except Exception:
@@ -416,6 +453,8 @@ async def api_task_opencode_prompt(task_id: int, request: Request):
     if not prompt and not command:
         raise HTTPException(status_code=400, detail="Prompt or command is required")
 
+    _append_convo("task", task_id, {"role": "user", "text": prompt if prompt else "/" + command})
+
     agent = (body or {}).get("agent", "build")
     config = (body or {}).get("config", "default")
     session_id = (body or {}).get("session_id", "")
@@ -434,7 +473,7 @@ async def api_task_opencode_prompt(task_id: int, request: Request):
         if os.path.exists(cfg_path):
             extra_env = {"OPENCODE_CONFIG": cfg_path}
 
-    return StreamingResponse(_opencode_stream(cmd, dir_obj.project_path, extra_env), media_type="text/event-stream")
+    return StreamingResponse(_opencode_stream(cmd, dir_obj.project_path, extra_env, convo_key=("task", task_id)), media_type="text/event-stream")
 
 
 @app.post("/api/directories/{dir_id}/opencode/prompt")
@@ -454,6 +493,9 @@ async def api_directory_opencode_prompt(dir_id: int, request: Request):
     command = (body or {}).get("command", "")
     if not prompt and not command:
         raise HTTPException(status_code=400, detail="Prompt or command is required")
+
+    _append_convo("dir", dir_id, {"role": "user", "text": prompt if prompt else "/" + command})
+
     agent = (body or {}).get("agent", "build")
     config = (body or {}).get("config", "default")
     session_id = (body or {}).get("session_id", "")
@@ -469,7 +511,47 @@ async def api_directory_opencode_prompt(dir_id: int, request: Request):
         cfg_path = os.path.expanduser(f"~/.config/opencode/configs/{config}.json")
         if os.path.exists(cfg_path):
             extra_env = {"OPENCODE_CONFIG": cfg_path}
-    return StreamingResponse(_opencode_stream(cmd, dir_obj.project_path, extra_env), media_type="text/event-stream")
+    return StreamingResponse(_opencode_stream(cmd, dir_obj.project_path, extra_env, convo_key=("dir", dir_id)), media_type="text/event-stream")
+
+
+@app.get("/api/tasks/{task_id}/opencode/convo")
+def api_task_opencode_convo(task_id: int, request: Request):
+    _verify_token(request)
+    raw = _read_convo("task", task_id)
+    merged = []
+    for entry in raw:
+        if merged and entry.get("role") == "ai" and merged[-1].get("role") == "ai":
+            merged[-1]["text"] += entry["text"]
+        else:
+            merged.append(dict(entry))
+    return merged
+
+
+@app.delete("/api/tasks/{task_id}/opencode/convo")
+def api_task_opencode_clear_convo(task_id: int, request: Request):
+    _verify_token(request)
+    _clear_convo("task", task_id)
+    return {"status": "ok"}
+
+
+@app.get("/api/directories/{dir_id}/opencode/convo")
+def api_directory_opencode_convo(dir_id: int, request: Request):
+    _verify_token(request)
+    raw = _read_convo("dir", dir_id)
+    merged = []
+    for entry in raw:
+        if merged and entry.get("role") == "ai" and merged[-1].get("role") == "ai":
+            merged[-1]["text"] += entry["text"]
+        else:
+            merged.append(dict(entry))
+    return merged
+
+
+@app.delete("/api/directories/{dir_id}/opencode/convo")
+def api_directory_opencode_clear_convo(dir_id: int, request: Request):
+    _verify_token(request)
+    _clear_convo("dir", dir_id)
+    return {"status": "ok"}
 
 
 @app.websocket("/ws/terminal/{session_id}")
@@ -681,6 +763,8 @@ var _PBUSY=false,_PABORT=null,_PQ=[],_DPBUSY=false,_DPABORT=null,_DPQ=[];
 function api(p){var s=p.indexOf('?')>=0?'&':'?';return fetch('/api'+p+(T?s+'token='+T:''),{headers:{Accept:'application/json'}}).then(function(r){if(!r.ok)throw Error(r.status+' '+r.statusText);return r.json()})}
 function esc(s){if(!s)return'';var d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function qj(s){return s.replace(/'/g,"\\'")}
+function loadTaskConvo(id){api('/tasks/'+id+'/opencode/convo').then(function(msgs){if(!msgs||!msgs.length)return;_PC=msgs;for(var i=_PC.length-1;i>=0;i--){if(_PC[i].session_id){_SID=_PC[i].session_id;break}}renderConv()})}
+function loadDirConvo(id){api('/directories/'+id+'/opencode/convo').then(function(msgs){if(!msgs||!msgs.length)return;_DPC=msgs;for(var i=_DPC.length-1;i>=0;i--){if(_DPC[i].session_id){_DSID=_DPC[i].session_id;break}}renderDirConv()})}
 function uB(n){return'<span class="b bu'+n+'">U'+n+'</span>'}
 function dB(n){return'<span class="b bd'+n+'">D'+n+'</span>'}
 function pRing(p){var c=Math.PI*36,o=c*(1-Math.min(p,100)/100);return'<svg width="42" height="42" viewBox="0 0 44 44"><circle cx="22" cy="22" r="18" fill="none" stroke="var(--border)" stroke-width="4"/><circle cx="22" cy="22" r="18" fill="none" stroke="var(--accent)" stroke-width="4" stroke-linecap="round" transform="rotate(-90 22 22)" stroke-dasharray="'+c+'" stroke-dashoffset="'+o+'"/><text x="22" y="22" text-anchor="middle" dominant-baseline="central" fill="var(--text2)" font-size="11" font-weight="700">'+Math.round(p)+'%</text></svg>'}
@@ -802,7 +886,7 @@ function showTask(taskId,taskName,dirId,dirName,archId,archName){
         +'<div class="pin"><div class="cmdmenu" id="cmdm"></div><textarea id="ppt" class="pta" placeholder="Ask opencode..." rows="1" oninput="this.style.height=\'\';this.style.height=Math.min(this.scrollHeight,80)+\'px\';onCmdInput(this,\'cmdm\')" onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();onTaskBtnClick('+t.id+')}"></textarea>'
         +'<button class="psb" id="psb" onclick="onTaskBtnClick('+t.id+')">▸</button></div></div>';
     }
-    c.innerHTML=h;
+    c.innerHTML=h;if(t.project_path)loadTaskConvo(taskId);
   }).catch(function(e){c.innerHTML='<div class="err">Error: '+e.message+'</div>'});
 }
 function showStats(){
@@ -890,7 +974,7 @@ function showDirAI(id){
     +'<div id="dpconv" class="pconv"></div>'
     +'<div class="pin"><div class="cmdmenu" id="dcmdm"></div><textarea id="dppt" class="pta" placeholder="Ask opencode about this project..." rows="1" oninput="this.style.height=\'\';this.style.height=Math.min(this.scrollHeight,80)+\'px\';onCmdInput(this,\'dcmdm\')" onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();onDirBtnClick('+id+')}"></textarea>'
     +'<button class="psb" id="dsb" onclick="onDirBtnClick('+id+')">▸</button></div></div>';
-  gM().innerHTML=h;
+  gM().innerHTML=h;loadDirConvo(id);
 }
 function exitDirAI(){renderTasks(_TC)}
 function sendDirPrompt(id){
@@ -899,6 +983,7 @@ function sendDirPrompt(id){
   if(!raw)return;
   input.value='';
   input.style.height='';
+  input.blur();
   _DPC.push({role:'user',text:raw});
   renderDirConv();
   if(_DPBUSY){_DPQ.push({id:id,raw:raw});updateDirBtn();return}
@@ -944,7 +1029,7 @@ function _doSendDir(raw,id){
   }).catch(function(e){if(e.name==='AbortError'){_DPC.push({role:'error',text:'Cancelled'})}else{_DPC.push({role:'error',text:e.message})};renderDirConv();dequeueDir()});
   document.getElementById('dppt').focus();
 }
-function newDirChat(){if(_DPABORT){_DPABORT.abort();_DPABORT=null}_DPBUSY=false;_DPC=[];_DSID='';_DPQ=[];_PLAN=false;var tog=document.getElementById('datog');if(tog){tog.querySelectorAll('.at-btn.active').forEach(function(b){b.classList.remove('active')});var bt=tog.querySelector('.at-btn[data-agent="build"]');if(bt)bt.classList.add('active')}renderDirConv();updateModelDisplay();updateDirBtn()}
+function newDirChat(){fetch('/api/directories/'+NAV.dirId+'/opencode/convo?token='+T,{method:'DELETE'});if(_DPABORT){_DPABORT.abort();_DPABORT=null}_DPBUSY=false;_DPC=[];_DSID='';_DPQ=[];_PLAN=false;var tog=document.getElementById('datog');if(tog){tog.querySelectorAll('.at-btn.active').forEach(function(b){b.classList.remove('active')});var bt=tog.querySelector('.at-btn[data-agent="build"]');if(bt)bt.classList.add('active')}renderDirConv();updateModelDisplay();updateDirBtn()}
 function renderDirConv(){
   var el=document.getElementById('dpconv');
   if(!el)return;
@@ -957,13 +1042,14 @@ function renderDirConv(){
   el.innerHTML=h;
   el.scrollTop=el.scrollHeight;
 }
-function newChat(){if(_PABORT){_PABORT.abort();_PABORT=null}_PBUSY=false;_PC=[];_SID='';_PQ=[];_PLAN=false;var tog=document.getElementById('atog');if(tog){tog.querySelectorAll('.at-btn.active').forEach(function(b){b.classList.remove('active')});var bt=tog.querySelector('.at-btn[data-agent="build"]');if(bt)bt.classList.add('active')}renderConv();document.getElementById('ppt').value='';updateModelDisplay();updateTaskBtn()}
+function newChat(){fetch('/api/tasks/'+NAV.taskId+'/opencode/convo?token='+T,{method:'DELETE'});if(_PABORT){_PABORT.abort();_PABORT=null}_PBUSY=false;_PC=[];_SID='';_PQ=[];_PLAN=false;var tog=document.getElementById('atog');if(tog){tog.querySelectorAll('.at-btn.active').forEach(function(b){b.classList.remove('active')});var bt=tog.querySelector('.at-btn[data-agent="build"]');if(bt)bt.classList.add('active')}renderConv();document.getElementById('ppt').value='';updateModelDisplay();updateTaskBtn()}
 function sendPrompt(id){
   var input=document.getElementById('ppt');
   var raw=input.value.trim();
   if(!raw)return;
   input.value='';
   input.style.height='';
+  input.blur();
   _PC.push({role:'user',text:raw});
   renderConv();
   if(_PBUSY){_PQ.push({id:id,raw:raw});updateTaskBtn();return}
