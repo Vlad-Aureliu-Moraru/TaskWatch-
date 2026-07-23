@@ -414,10 +414,14 @@ async def _opencode_stream(cmd: list[str], cwd: str, extra_env: dict | None = No
                     if stripped:
                         try:
                             evt = json.loads(stripped)
-                            if evt.get("type") == "text" and evt.get("part", {}).get("text"):
-                                _append_convo(convo_key[0], convo_key[1], {"role": "ai", "text": evt["part"]["text"], "session_id": evt.get("sessionID", "")})
+                            part = evt.get("part")
+                            if evt.get("type") == "text" and isinstance(part, dict):
+                                text = part.get("text")
+                                if isinstance(text, str) and text:
+                                    _append_convo(convo_key[0], convo_key[1], {"role": "ai", "text": text, "session_id": evt.get("sessionID", "")})
                         except json.JSONDecodeError:
-                            _append_convo(convo_key[0], convo_key[1], {"role": "ai", "text": stripped})
+                            if stripped != "[DONE]":
+                                _append_convo(convo_key[0], convo_key[1], {"role": "ai", "text": stripped})
                 loop.call_soon_threadsafe(queue.put_nowait, ("data", line))
             proc.wait()
         except Exception:
@@ -535,16 +539,19 @@ def api_task_opencode_convo(task_id: int, request: Request):
     _verify_token(request)
     try:
         raw = _read_convo("task", task_id)
+        merged = []
+        for entry in raw:
+            if merged and entry.get("role") == "ai" and merged[-1].get("role") == "ai":
+                text = entry.get("text", "")
+                if isinstance(text, str):
+                    prev = merged[-1].get("text")
+                    merged[-1]["text"] = (prev if isinstance(prev, str) else "") + text
+            else:
+                merged.append(dict(entry))
+        return merged
     except Exception as e:
         import traceback; traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to read convo: {e}")
-    merged = []
-    for entry in raw:
-        if merged and entry.get("role") == "ai" and merged[-1].get("role") == "ai":
-            merged[-1]["text"] += entry["text"]
-        else:
-            merged.append(dict(entry))
-    return merged
+        raise HTTPException(status_code=500, detail=f"Convo read/merge error: {e}")
 
 
 @app.delete("/api/tasks/{task_id}/opencode/convo")
@@ -559,16 +566,19 @@ def api_directory_opencode_convo(dir_id: int, request: Request):
     _verify_token(request)
     try:
         raw = _read_convo("dir", dir_id)
+        merged = []
+        for entry in raw:
+            if merged and entry.get("role") == "ai" and merged[-1].get("role") == "ai":
+                text = entry.get("text", "")
+                if isinstance(text, str):
+                    prev = merged[-1].get("text")
+                    merged[-1]["text"] = (prev if isinstance(prev, str) else "") + text
+            else:
+                merged.append(dict(entry))
+        return merged
     except Exception as e:
         import traceback; traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to read convo: {e}")
-    merged = []
-    for entry in raw:
-        if merged and entry.get("role") == "ai" and merged[-1].get("role") == "ai":
-            merged[-1]["text"] += entry["text"]
-        else:
-            merged.append(dict(entry))
-    return merged
+        raise HTTPException(status_code=500, detail=f"Convo read/merge error: {e}")
 
 
 @app.delete("/api/directories/{dir_id}/opencode/convo")
