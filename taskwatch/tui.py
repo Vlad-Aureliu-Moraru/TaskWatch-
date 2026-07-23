@@ -2820,24 +2820,48 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         else:
             self._set_timed_caption("error", "Failed to write .taskwatch-directory ")
 
+    @staticmethod
+    def _find_terminal() -> str | None:
+        term = os.environ.get("TERMINAL", "")
+        if term and shutil.which(term):
+            return term
+        for c in ["xterm", "gnome-terminal", "konsole", "xfce4-terminal", "lxterminal", "foot", "alacritty", "kitty", "wezterm"]:
+            if shutil.which(c):
+                return c
+        return None
+
     def _cmd_serve(self) -> None:
         host = "0.0.0.0"
         port = 8080
-        self._set_timed_caption("done", f"Starting server on *:{port}... ")
         from .server import get_url, _get_tailscale_ip
         url = get_url(host, port)
         ts_ip = _get_tailscale_ip()
         msg = f"Server: {url}"
         if ts_ip:
             msg += f" | Tailscale: {get_url(ts_ip, port)}"
-        self._server_running = True
-        self._server_thread = threading.Thread(
-            target=self._run_server_thread,
-            args=(host, port),
-            daemon=True,
-        )
-        self._server_thread.start()
-        self._set_timed_caption("done", f"{msg} ")
+
+        term = self._find_terminal()
+        if term:
+            cmd = f"'{sys.executable}' -c 'from taskwatch.server import run_server; run_server(host=\"{host}\", port={port})'"
+            try:
+                if "gnome-terminal" in term:
+                    subprocess.Popen(["gnome-terminal", "--", "sh", "-c", cmd],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    subprocess.Popen([term, "-e", "sh", "-c", cmd],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self._set_timed_caption("done", f"{msg} (new terminal) ")
+            except Exception as e:
+                self._set_timed_caption("error", f"Failed to launch terminal: {e} ")
+        else:
+            self._server_running = True
+            self._server_thread = threading.Thread(
+                target=self._run_server_thread,
+                args=(host, port),
+                daemon=True,
+            )
+            self._server_thread.start()
+            self._set_timed_caption("done", f"{msg} ")
 
     def _run_server_thread(self, host: str, port: int) -> None:
         from .server import run_server
