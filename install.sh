@@ -51,4 +51,14 @@ fi
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$APP_DIR"
 command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f -t "$HOME/.local/share/icons" 2>/dev/null || true
 
+# Install opencode custom commands
+OPENCODE_CMD_DIR="${HOME}/.config/opencode/commands"
+if command -v opencode >/dev/null 2>&1; then
+    mkdir -p "$OPENCODE_CMD_DIR"
+    if [ -d "taskwatch/opencode-commands" ]; then
+        cp taskwatch/opencode-commands/*.md "$OPENCODE_CMD_DIR/" 2>/dev/null || true
+        echo "  (opencode commands installed)"
+    fi
+fi
+
 echo "Installed. Launch: taskwatch tui"

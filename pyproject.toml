@@ -22,7 +22,7 @@ taskwatch = "taskwatch.__main__:main"
 packages = ["taskwatch"]
 
 [tool.setuptools.package-data]
-taskwatch = ["../update.sh"]
+taskwatch = ["../update.sh", "opencode-commands/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
