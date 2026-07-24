@@ -37,6 +37,12 @@ taskwatch.egg-info/entry_points.txt
 taskwatch.egg-info/requires.txt
 taskwatch.egg-info/top_level.txt
 taskwatch/../update.sh
+taskwatch/opencode-commands/compact.md
+taskwatch/opencode-commands/done.md
+taskwatch/opencode-commands/taskwatch-attach.md
+taskwatch/opencode-commands/taskwatch-next.md
+taskwatch/opencode-commands/taskwatch-plan.md
+taskwatch/opencode-commands/taskwatch-review.md
 tests/test_ai_client.py
 tests/test_archive_cmds.py
 tests/test_calcurse_cmds.py
