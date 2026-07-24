@@ -1,4 +1,4 @@
-<img src="TaskWatch+.png" alt="TaskWatch+" width="64" height="64">  # TaskWatch+
+<img src="TaskWatch+.png" alt="TaskWatch+" width="64" height="64">
 
 
 # TaskWatch+
