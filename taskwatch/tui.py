@@ -18,6 +18,7 @@ from pathlib import Path
 import urwid
 from urwid import (
     AttrMap,
+    Filler,
     LineBox,
     ListBox,
     Overlay,

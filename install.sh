@@ -23,6 +23,8 @@ mkdir -p "$APP_DIR" "$ICON_DIR" "$TASKWATCH_DIR"
 
 cp update.sh "$TASKWATCH_DIR/" 2>/dev/null || true
 chmod +x "$TASKWATCH_DIR/update.sh" 2>/dev/null || true
+cp uninstall.sh "$TASKWATCH_DIR/" 2>/dev/null || true
+chmod +x "$TASKWATCH_DIR/uninstall.sh" 2>/dev/null || true
 
 cp TaskWatch+.png "$ICON_DIR/" 2>/dev/null || true
 
@@ -30,7 +32,7 @@ cp TaskWatch+.png "$ICON_DIR/" 2>/dev/null || true
 TERMINAL=""
 for term in kitty alacritty wezterm gnome-terminal konsole xfce4-terminal foot xterm; do
     if command -v "$term" >/dev/null 2>&1; then
-        TERMINAL="$term"
+        TERMINAL=$(readlink -f "$(command -v "$term")")
         break
     fi
 done

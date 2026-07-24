@@ -46,8 +46,10 @@ jobs:
           cp TaskWatch+.png taskwatch-${{ github.ref_name }}/
           cp install.sh taskwatch-${{ github.ref_name }}/
           cp update.sh taskwatch-${{ github.ref_name }}/
+          cp uninstall.sh taskwatch-${{ github.ref_name }}/
           chmod +x taskwatch-${{ github.ref_name }}/install.sh
           chmod +x taskwatch-${{ github.ref_name }}/update.sh
+          chmod +x taskwatch-${{ github.ref_name }}/uninstall.sh
           cp -r config taskwatch-${{ github.ref_name }}/
           tar czf taskwatch-${{ github.ref_name }}-linux-x86_64.tar.gz taskwatch-${{ github.ref_name }}/
 
