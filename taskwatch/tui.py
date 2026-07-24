@@ -1754,7 +1754,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         self._cmd.set_edit_pos(len(completed))
 
     def _show_import_json_panel(self) -> None:
-        overlay = ImportJSONOverlay(self, title="Import Tasks JSON")
+        overlay = ImportJSONOverlay(self, target_id=self._selected_directory_id, title="Import Tasks JSON")
         self._import_json_overlay = Overlay(
             overlay,
             self._frame,
